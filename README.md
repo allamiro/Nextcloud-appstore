@@ -1,5 +1,5 @@
 
-From the repo root copy the environment files to ```.env``` then run
+From the repo root copy the environment file from ```.env.sample``` to ```.env``` then run
 
 ```
 docker compose build
