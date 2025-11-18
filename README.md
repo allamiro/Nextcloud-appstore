@@ -1,26 +1,19 @@
 
-From the repo root copy the environment file from ```.env.sample``` to ```.env``` then run
+```
+docker build \
+  --build-arg APPSTORE_VERSION=v4.11.1 \
+  -t nextcloud-appstore:ubuntu .
+```
+# Run – assuming PostgreSQL is outside and config mounted into /srv/config
 
 ```
-docker compose build
-docker compose up -d
-```
-
-
-Then create the admin user and set up GitHub social login inside the app container:
-
-
-```
-docker compose exec app bash
-
-# Inside container:
-python manage.py createsuperuser --username admin --email admin@example.com
-python manage.py verifyemail --username admin --email admin@example.com
-
-# (After you have GitHub client/secret)
-python manage.py setupsocial \
-  --github-client-id "CLIENT_ID" \
-  --github-secret "SECRET" \
-  --domain apps.example.com
+docker run -d \
+  --name appstore \
+  -p 8000:8000 \
+  -v /srv/appstore-config:/srv/config \
+  -v /srv/appstore-static:/srv/static \
+  -v /srv/appstore-media:/srv/media \
+  -v /srv/appstore-logs:/srv/logs \
+  nextcloud-appstore:ubuntu
 
 ```
