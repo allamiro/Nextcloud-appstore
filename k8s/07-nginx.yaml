@@ -235,7 +235,7 @@ spec:
 
 ---
 # =============================================================================
-# Nginx Service (LoadBalancer for Tanzu - No Ingress Required)
+# Nginx Service (NodePort for Docker Desktop / LoadBalancer for Tanzu)
 # =============================================================================
 apiVersion: v1
 kind: Service
@@ -245,21 +245,18 @@ metadata:
   labels:
     app.kubernetes.io/name: nextcloud-appstore
     app.kubernetes.io/component: proxy
-  annotations:
-    # Tanzu/NSX-T LoadBalancer annotations (adjust for your environment)
-    # For NSX-T:
-    # ncp/internal_ip_for_policy: "true"
-    # For MetalLB:
-    # metallb.universe.tf/address-pool: production
 spec:
-  type: LoadBalancer
+  # Use NodePort for Docker Desktop, LoadBalancer for Tanzu/Cloud
+  type: NodePort
   ports:
     - port: 443
       targetPort: 443
+      nodePort: 30443
       protocol: TCP
       name: https
     - port: 80
       targetPort: 80
+      nodePort: 30080
       protocol: TCP
       name: http
   selector:
