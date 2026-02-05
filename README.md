@@ -658,8 +658,6 @@ python manage.py createsuperuser
 
 Configure your air-gapped Nextcloud server to use this App Store.
 
-### Option A: Configure Nextcloud to Use Your App Store
-
 **Step 1:** On Nextcloud Server, edit `config/config.php`:
 
 ```php
@@ -673,7 +671,6 @@ Configure your air-gapped Nextcloud server to use this App Store.
 cp k8s/certs/root-ca.crt /path/to/nextcloud/data/
 
 # In Nextcloud config.php, add to trusted CAs
-# Or disable SSL verification (not recommended for production):
 'appstoreenabled' => true,
 'appstore.experimental.enabled' => true,
 ```
@@ -681,19 +678,15 @@ cp k8s/certs/root-ca.crt /path/to/nextcloud/data/
 **Step 3:** Configure DNS or `/etc/hosts` on Nextcloud server:
 
 ```bash
-# Add to /etc/hosts
+# Add to /etc/hosts (replace IP with your nginx-service IP)
 echo "10.97.10.197 appstore.local" >> /etc/hosts
 ```
 
-Replace the IP with your nginx-service ClusterIP or LoadBalancer IP.
+To get your nginx-service IP:
 
-### Option B: Manual App Installation
-
-If you prefer not to integrate the API:
-
-1. Download app `.tar.gz` files from your App Store
-2. Extract to Nextcloud's `apps/` directory
-3. Enable via `occ app:enable <app_id>`
+```bash
+kubectl get svc nginx-service -n nextcloud-appstore
+```
 
 ---
 
