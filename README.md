@@ -4,14 +4,15 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 
 ## Architecture Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        STAGING SYSTEM (Internet Connected)                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  1. Build Docker image                                                       │
 │  2. Run staging environment with docker-compose                              │
 │  3. Populate database (admin user, fixtures, sync releases)                  │
-│  4. Export Docker images + PostgreSQL dump                                   │
+│  4. Download app archives (for full air-gap)                                 │
+│  5. Export Docker images + PostgreSQL dump                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼ Transfer exports/
@@ -19,15 +20,23 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 │                    PRODUCTION (Disconnected Kubernetes)                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
-│  │   Ingress   │───▶│    Nginx    │───▶│  App Store  │───▶│  PostgreSQL │  │
-│  │   (SSL)     │    │   (Proxy)   │    │   (uWSGI)   │    │  (Database) │  │
-│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘  │
-│                            │                  │                             │
-│                            ▼                  ▼                             │
-│                     ┌─────────────┐    ┌─────────────┐                      │
-│                     │   Static    │    │    Media    │                      │
-│                     │    PVC      │    │     PVC     │                      │
-│                     └─────────────┘    └─────────────┘                      │
+│  │   Nginx     │───▶│  App Store  │───▶│  PostgreSQL │    │ File Server │  │
+│  │  :30443     │    │   (uWSGI)   │    │  (Database) │    │   :30444    │  │
+│  │  NodePort   │    └─────────────┘    └─────────────┘    │ App Archives│  │
+│  └─────────────┘           │                              └─────────────┘  │
+│         │                  │                                     │          │
+│         │                  ▼                                     │          │
+│         │           ┌─────────────┐    ┌─────────────┐          │          │
+│         │           │   Static    │    │    Media    │          │          │
+│         │           │    PVC      │    │     PVC     │          │          │
+│         │           └─────────────┘    └─────────────┘          │          │
+│         │                                                        │          │
+│         └────────────────────┬───────────────────────────────────┘          │
+│                              ▼                                              │
+│                       ┌─────────────┐                                       │
+│                       │  Nextcloud  │  ← Queries API + Downloads Apps       │
+│                       │   Server    │                                       │
+│                       └─────────────┘                                       │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -414,7 +423,7 @@ Transfer `appstore-deployment-package.tar` to your disconnected server using:
 
 Files are numbered in deployment order:
 
-```
+```text
 k8s/
 ├── 01-namespace.yaml      # Namespace
 ├── 02-secrets.yaml        # App and DB secrets
@@ -425,6 +434,7 @@ k8s/
 ├── 07-nginx.yaml          # Nginx with SSL + NodePort service
 ├── 08-cronjob.yaml        # Optional scheduled tasks
 ├── 09-tls-secret.yaml     # TLS certificates (generated)
+├── 10-fileserver.yaml     # File server for app archives
 ├── generate-certs.sh      # Script to generate SSL certs
 └── certs/                 # Generated certificate files
 ```
@@ -510,6 +520,12 @@ kubectl get pods -n nextcloud-appstore
 
 # Check services
 kubectl get svc -n nextcloud-appstore
+
+# View application logs
+kubectl logs -f deployment/appstore -n nextcloud-appstore
+
+# Test health endpoint
+curl -k https://localhost:30443/health/
 ```
 
 ### Step 8: Access the Application
@@ -539,30 +555,6 @@ kubectl apply -f k8s/08-cronjob.yaml
 # Trigger the initial setup job
 kubectl create job --from=cronjob/appstore-initial-setup \
     initial-setup-manual -n nextcloud-appstore
-```
-
-### Step 10: Verify Deployment (Alternative)
-
-```bash
-# Check all pods are running
-kubectl get pods -n nextcloud-appstore
-
-# Check services and get LoadBalancer IP
-kubectl get svc -n nextcloud-appstore
-
-# Get the external IP/hostname
-kubectl get svc nginx-service -n nextcloud-appstore \
-    -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-
-# View application logs
-kubectl logs -f deployment/appstore -n nextcloud-appstore
-
-# Test connectivity (use LoadBalancer IP)
-curl -k https://<LOADBALANCER_IP>/health/
-
-# Or port-forward for local testing
-kubectl port-forward svc/nginx-service 8443:443 -n nextcloud-appstore
-curl -k https://localhost:8443/health/
 ```
 
 ---
