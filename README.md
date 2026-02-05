@@ -388,20 +388,49 @@ This creates:
 - Categories and translations
 - Admin user account
 
-### Step 3: Prepare Transfer Package
+### Step 3: Download App Archives (For Full Air-Gap)
+
+**This step is required if you want Nextcloud to actually install apps** (not just browse them).
+
+```bash
+# Make mirror scripts executable
+chmod +x scripts/mirror-apps/*.sh
+
+# Extract all download URLs from database
+sh scripts/mirror-apps/01-extract-urls.sh
+
+# Download all app archives (~13,000+ files, several GB)
+# This takes a while - you can cancel and resume later
+sh scripts/mirror-apps/02-download-apps.sh
+
+# Update database URLs to point to local file server
+FILE_SERVER_URL=https://localhost:30444/apps sh scripts/mirror-apps/03-update-db-urls.sh
+
+# Re-export database with updated URLs
+sh scripts/db/export-db.sh
+```
+
+This creates in `exports/app-archives/`:
+
+- `urls.txt` - List of all download URLs
+- `files/` - Downloaded .tar.gz app archives
+- `failed.txt` - Any URLs that failed to download
+
+### Step 4: Prepare Transfer Package
 
 ```bash
 # View what will be transferred
 ls -la exports/
 
-# Create a single archive for transfer
-tar -cvf appstore-deployment-package.tar exports/ k8s/ config/ nginx/
+# Create a single archive for transfer (includes app archives)
+tar -cvf appstore-deployment-package.tar \
+    exports/ k8s/ config/ nginx/ fileserver/ scripts/
 
-# Check size
+# Check size (may be several GB with app archives)
 ls -lh appstore-deployment-package.tar
 ```
 
-### Step 4: Transfer to Disconnected Environment
+### Step 5: Transfer to Disconnected Environment
 
 Transfer `appstore-deployment-package.tar` to your disconnected server using:
 
@@ -562,6 +591,22 @@ kubectl create job --from=cronjob/appstore-initial-setup \
 
 ## Maintenance
 
+### Scripts Reference
+
+All available scripts and their purposes:
+
+| Script | Purpose | Environment |
+|--------|---------|-------------|
+| `scripts/sync-apps.sh` | Sync apps from official Nextcloud App Store | Staging (online) |
+| `scripts/build-and-export.sh` | Build Docker images and export for transfer | Staging (online) |
+| `scripts/create-admin.sh` | Create admin user account | Both |
+| `scripts/import-and-deploy.sh` | Full import and deploy automation | Air-gapped K8s |
+| `scripts/db/export-db.sh` | Export PostgreSQL database | Staging |
+| `scripts/db/import-db.sh` | Import PostgreSQL database | Air-gapped K8s |
+| `scripts/mirror-apps/01-extract-urls.sh` | Extract all app download URLs from DB | Staging (online) |
+| `scripts/mirror-apps/02-download-apps.sh` | Download all .tar.gz app archives | Staging (online) |
+| `scripts/mirror-apps/03-update-db-urls.sh` | Update DB URLs to local file server | Staging |
+
 ### Repeatable Update Cycle
 
 When apps need updating, follow this repeatable process:
@@ -572,11 +617,15 @@ When apps need updating, follow this repeatable process:
 # Re-sync apps from official Nextcloud App Store
 sh scripts/sync-apps.sh
 
+# (Optional) Download new app archives for file server
+sh scripts/mirror-apps/01-extract-urls.sh
+sh scripts/mirror-apps/02-download-apps.sh
+
 # Re-export database with updated apps
 sh scripts/db/export-db.sh
 
 # Package for transfer
-tar -cvf appstore-update.tar exports/appstore_db_*.sql.gz
+tar -cvf appstore-update.tar exports/appstore_db_*.sql.gz exports/app-archives/
 ```
 
 **On Air-Gapped Kubernetes:**
@@ -585,6 +634,10 @@ tar -cvf appstore-update.tar exports/appstore_db_*.sql.gz
 # Extract and import updated database
 tar -xvf appstore-update.tar
 sh scripts/db/import-db.sh exports/appstore_db_*.sql.gz k8s
+
+# Update file server with new app archives
+FS_POD=$(kubectl get pod -l app=fileserver -n nextcloud-appstore -o jsonpath='{.items[0].metadata.name}')
+kubectl cp exports/app-archives/files/. nextcloud-appstore/${FS_POD}:/srv/apps/
 
 # Verify apps are updated
 kubectl logs -f deployment/appstore -n nextcloud-appstore
