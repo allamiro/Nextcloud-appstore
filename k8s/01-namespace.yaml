@@ -1,0 +1,22 @@
+# =============================================================================
+# Kubernetes Namespace for Nextcloud App Store
+# =============================================================================
+# Compatible with VMware Tanzu Kubernetes Grid (TKG)
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: namespace
+    # Pod Security Standards (Kubernetes 1.25+)
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    # Description
+    description: "Nextcloud App Store - Air-gapped deployment"
+    # Tanzu annotations (optional)
+    # vmware-system-resource-pool: "appstore-pool"

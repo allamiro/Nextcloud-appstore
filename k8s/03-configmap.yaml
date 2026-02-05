@@ -32,8 +32,15 @@ data:
   LOAD_FIXTURES: "false"
   IMPORT_TRANSLATIONS: "false"
   
-  # Site domain for social login
+  # Site domain
   SITE_DOMAIN: "appstore.example.com"
+  
+  # ==========================================================================
+  # Air-Gapped Environment Notes:
+  # - GitHub OAuth is DISABLED (no internet access)
+  # - Users must use local accounts via Django admin panel
+  # - App downloads point to external URLs (may need local mirror)
+  # ==========================================================================
 
 ---
 # =============================================================================

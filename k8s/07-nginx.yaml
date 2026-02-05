@@ -1,6 +1,8 @@
 # =============================================================================
 # Nginx Deployment for Nextcloud App Store
 # =============================================================================
+# Configured for Tanzu with custom CA chain and SSL termination
+# =============================================================================
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -49,14 +51,58 @@ data:
             keepalive 32;
         }
 
+        # HTTP server - redirect to HTTPS
         server {
             listen 80;
             listen [::]:80;
             server_name _;
+            
+            # Health check endpoint (no redirect)
+            location /health/ {
+                access_log off;
+                uwsgi_pass appstore;
+                include uwsgi_params;
+            }
+            
+            # Redirect all other traffic to HTTPS
+            location / {
+                return 301 https://$host$request_uri;
+            }
+        }
 
+        # HTTPS server with custom CA chain
+        server {
+            listen 443 ssl http2;
+            listen [::]:443 ssl http2;
+            server_name _;
+
+            # SSL Certificate and Key
+            ssl_certificate /etc/nginx/ssl/tls.crt;
+            ssl_certificate_key /etc/nginx/ssl/tls.key;
+            
+            # Custom CA chain for client verification (optional)
+            ssl_client_certificate /etc/nginx/ssl/ca.crt;
+            ssl_verify_client optional;
+            
+            # SSL Configuration - Modern settings
+            ssl_protocols TLSv1.2 TLSv1.3;
+            ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+            ssl_prefer_server_ciphers off;
+            ssl_session_cache shared:SSL:10m;
+            ssl_session_timeout 1d;
+            ssl_session_tickets off;
+            
+            # OCSP Stapling (if your CA supports it)
+            # ssl_stapling on;
+            # ssl_stapling_verify on;
+            # ssl_trusted_certificate /etc/nginx/ssl/ca.crt;
+
+            # Security headers
             add_header X-Content-Type-Options nosniff always;
             add_header X-Frame-Options DENY always;
             add_header X-XSS-Protection "1; mode=block" always;
+            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
             client_max_body_size 75M;
 
@@ -87,7 +133,7 @@ data:
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header X-Forwarded-Proto https;
             }
         }
     }
@@ -126,6 +172,8 @@ spec:
           ports:
             - containerPort: 80
               name: http
+            - containerPort: 443
+              name: https
           resources:
             requests:
               memory: "64Mi"
@@ -142,6 +190,10 @@ spec:
               readOnly: true
             - name: media-files
               mountPath: /srv/media
+              readOnly: true
+            # SSL certificates with custom CA chain
+            - name: ssl-certs
+              mountPath: /etc/nginx/ssl
               readOnly: true
           livenessProbe:
             httpGet:
@@ -169,10 +221,21 @@ spec:
         - name: media-files
           persistentVolumeClaim:
             claimName: appstore-media-pvc
+        # SSL certificates from secret (includes CA chain)
+        - name: ssl-certs
+          secret:
+            secretName: appstore-tls
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
 
 ---
 # =============================================================================
-# Nginx Service
+# Nginx Service (LoadBalancer for Tanzu - No Ingress Required)
 # =============================================================================
 apiVersion: v1
 kind: Service
@@ -182,12 +245,48 @@ metadata:
   labels:
     app.kubernetes.io/name: nextcloud-appstore
     app.kubernetes.io/component: proxy
+  annotations:
+    # Tanzu/NSX-T LoadBalancer annotations (adjust for your environment)
+    # For NSX-T:
+    # ncp/internal_ip_for_policy: "true"
+    # For MetalLB:
+    # metallb.universe.tf/address-pool: production
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   ports:
+    - port: 443
+      targetPort: 443
+      protocol: TCP
+      name: https
     - port: 80
       targetPort: 80
       protocol: TCP
       name: http
   selector:
     app: nginx
+
+---
+# =============================================================================
+# Nginx Service (ClusterIP alternative - use if LoadBalancer not available)
+# =============================================================================
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: nginx-clusterip
+#   namespace: nextcloud-appstore
+#   labels:
+#     app.kubernetes.io/name: nextcloud-appstore
+#     app.kubernetes.io/component: proxy
+# spec:
+#   type: ClusterIP
+#   ports:
+#     - port: 443
+#       targetPort: 443
+#       protocol: TCP
+#       name: https
+#     - port: 80
+#       targetPort: 80
+#       protocol: TCP
+#       name: http
+#   selector:
+#     app: nginx

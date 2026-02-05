@@ -437,40 +437,39 @@ echo -n "your-database-password" | base64
 nano k8s/secrets.yaml
 ```
 
-### Step 5: Configure Ingress
+### Step 5: Create TLS Secret (Custom CA Chain)
 
-Edit `k8s/ingress.yaml`:
-- Update `host:` to your domain
-- Create TLS secret with your certificates:
+For Tanzu with custom CA-signed certificates:
 
 ```bash
-# Create TLS secret
-kubectl create secret tls appstore-tls \
-    --cert=/path/to/your/certificate.crt \
-    --key=/path/to/your/private.key \
+# Create TLS secret with CA chain
+kubectl create secret generic appstore-tls \
+    --from-file=tls.crt=/path/to/server-chain.crt \
+    --from-file=tls.key=/path/to/server.key \
+    --from-file=ca.crt=/path/to/ca-chain.crt \
     -n nextcloud-appstore
 ```
 
-### Step 6: Deploy to Kubernetes
+### Step 6: Deploy to Kubernetes (Tanzu)
 
 ```bash
-# Apply all manifests using Kustomize
-kubectl apply -k k8s/
-
-# Or apply individually in order:
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/secrets.yaml
-kubectl apply -f k8s/configmap.yaml
-kubectl apply -f k8s/pvc.yaml
-kubectl apply -f k8s/postgres-deployment.yaml
+# Apply manifests in order (files are numbered for convenience):
+kubectl apply -f k8s/01-namespace.yaml
+kubectl apply -f k8s/02-secrets.yaml
+kubectl apply -f k8s/03-configmap.yaml
+kubectl apply -f k8s/04-pvc.yaml
+kubectl apply -f k8s/05-postgres.yaml
 
 # Wait for PostgreSQL
 kubectl wait --for=condition=ready pod -l app=postgres \
     -n nextcloud-appstore --timeout=120s
 
-kubectl apply -f k8s/appstore-deployment.yaml
-kubectl apply -f k8s/nginx-deployment.yaml
-kubectl apply -f k8s/ingress.yaml
+kubectl apply -f k8s/06-appstore.yaml
+kubectl apply -f k8s/07-nginx.yaml
+
+# Nginx service is LoadBalancer type - no ingress needed
+# Optional: Apply cronjob for scheduled tasks
+# kubectl apply -f k8s/08-cronjob.yaml
 ```
 
 ### Step 7: Import Database
@@ -506,44 +505,76 @@ kubectl create job --from=cronjob/appstore-initial-setup \
 # Check all pods are running
 kubectl get pods -n nextcloud-appstore
 
-# Check services
+# Check services and get LoadBalancer IP
 kubectl get svc -n nextcloud-appstore
 
-# Check ingress
-kubectl get ingress -n nextcloud-appstore
+# Get the external IP/hostname
+kubectl get svc nginx-service -n nextcloud-appstore \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
 
 # View application logs
 kubectl logs -f deployment/appstore -n nextcloud-appstore
 
-# Test connectivity
-kubectl port-forward svc/nginx-service 8080:80 -n nextcloud-appstore
-curl http://localhost:8080/health/
+# Test connectivity (use LoadBalancer IP)
+curl -k https://<LOADBALANCER_IP>/health/
+
+# Or port-forward for local testing
+kubectl port-forward svc/nginx-service 8443:443 -n nextcloud-appstore
+curl -k https://localhost:8443/health/
 ```
 
 ---
 
 ## Maintenance
 
-### Updating the Application
+### Repeatable Update Cycle
 
-On staging (internet-connected):
+When apps need updating, follow this repeatable process:
+
+**On Staging (internet-connected):**
+
+```bash
+# Re-sync apps from official Nextcloud App Store
+sh scripts/sync-apps.sh
+
+# Re-export database with updated apps
+sh scripts/db/export-db.sh
+
+# Package for transfer
+tar -cvf appstore-update.tar exports/appstore_db_*.sql.gz
+```
+
+**On Air-Gapped Kubernetes:**
+
+```bash
+# Extract and import updated database
+tar -xvf appstore-update.tar
+sh scripts/db/import-db.sh exports/appstore_db_*.sql.gz k8s
+
+# Verify apps are updated
+kubectl logs -f deployment/appstore -n nextcloud-appstore
+```
+
+### Updating the Application Code
+
+**On Staging (internet-connected):**
 
 ```bash
 # Update repository
-git pull origin master
+git pull origin main
 
 # Rebuild image with new version
-APPSTORE_VERSION=v5.0.0 docker-compose build appstore
+docker-compose build appstore
 
-# Re-export and transfer to production
-./scripts/build-and-export.sh
+# Re-export images and transfer to production
+sh scripts/build-and-export.sh
 ```
 
-On production (disconnected):
+**On Air-Gapped Kubernetes:**
 
 ```bash
 # Load new image
-docker load -i exports/nextcloudappstore_*.tar.gz
+gunzip -c exports/nextcloudappstore_*.tar.gz | docker load
 
 # Rolling update
 kubectl rollout restart deployment/appstore -n nextcloud-appstore
@@ -592,11 +623,31 @@ kubectl exec -it deployment/appstore -n nextcloud-appstore -- \
 
 ---
 
+## Air-Gapped Environment Notes
+
+**User Management:**
+
+- GitHub OAuth is **disabled** (no internet access)
+- Users must be created via Django admin panel at `/admin/`
+- Admin credentials are set via environment variables or during initial setup
+
+**To create additional users:**
+
+```bash
+# Access the appstore pod
+kubectl exec -it deployment/appstore -n nextcloud-appstore -- /bin/bash
+
+# Create a superuser
+python manage.py createsuperuser
+```
+
+---
+
 ## Security Notes
 
 1. **Always change default passwords** in `k8s/secrets.yaml`
 2. **Generate a unique SECRET_KEY** for production
-3. **Use proper TLS certificates** (not self-signed) in production
+3. **Use proper TLS certificates** signed by your custom CA
 4. **Restrict network policies** in Kubernetes
 5. **Regular backups** of PostgreSQL data
 6. **Keep images updated** with security patches
