@@ -5,14 +5,14 @@
 # Designed for air-gapped Kubernetes deployment behind Nginx with SSL
 # =============================================================================
 
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8
 
-# Install build dependencies
+# Install build dependencies (Ubuntu 24.04 has Python 3.12)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         locales \
@@ -24,9 +24,8 @@ RUN apt-get update && \
         curl \
         ca-certificates \
         libpcre3 libpcre3-dev \
+        nodejs npm \
     && locale-gen en_US.UTF-8 \
-    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -61,19 +60,20 @@ RUN pip install uwsgi
 # =============================================================================
 # Production Runtime Image
 # =============================================================================
-FROM ubuntu:22.04 AS production
+FROM ubuntu:24.04 AS production
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
-    DJANGO_SETTINGS_MODULE=config.production
+    DJANGO_SETTINGS_MODULE=nextcloudappstore.settings.production
 
-# Install runtime dependencies only
+# Install runtime dependencies only (Ubuntu 24.04 has Python 3.12)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         locales \
         python3 \
+        libpython3.12 \
         libpq5 \
         libpcre3 \
         gettext \
@@ -90,6 +90,9 @@ COPY --from=builder /build/venv /srv/venv
 
 # Copy application from builder
 COPY --from=builder /build/appstore /srv/appstore
+
+# Copy production settings into the app's settings directory
+COPY config/production.py /srv/appstore/nextcloudappstore/settings/production.py
 
 # Set environment
 ENV VIRTUAL_ENV=/srv/venv

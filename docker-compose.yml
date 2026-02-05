@@ -54,7 +54,7 @@ services:
       DATABASE_PASSWORD: ${DB_PASSWORD:-changeme_staging_password}
       
       # Django settings
-      DJANGO_SETTINGS_MODULE: config.production
+      DJANGO_SETTINGS_MODULE: nextcloudappstore.settings.production
       SECRET_KEY: ${SECRET_KEY:-CHANGE_THIS_IN_PRODUCTION_use_64_char_random_string}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,appstore.local}
       

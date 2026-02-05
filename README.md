@@ -150,9 +150,9 @@ nano .env
 **Important `.env` settings to configure:**
 
 ```bash
-# Generate a secure secret key
-SECRET_KEY=$(env LC_CTYPE=C tr -dc "a-zA-Z0-9-_\$\?" < /dev/urandom | head -c 64; echo)
-echo "SECRET_KEY=${SECRET_KEY}" >> .env
+# Generate a secure secret key (IMPORTANT: avoid $ characters)
+env LC_CTYPE=C tr -dc "a-zA-Z0-9_-" < /dev/urandom | head -c 64; echo
+# Copy the output and set it as SECRET_KEY in .env
 
 # Set your database password
 DB_PASSWORD=your_secure_password_here
@@ -163,8 +163,15 @@ SITE_DOMAIN=appstore.example.com
 
 # GitHub API token (required for syncing releases)
 # Get from: https://github.com/settings/tokens
-GITHUB_API_TOKEN=your_github_token_here
+GITHUB_API_TOKEN=ghp_your_github_token_here
+
+# Admin credentials (created automatically on first run)
+ADMIN_USERNAME=admin
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=your_secure_admin_password
 ```
+
+> **⚠️ Important:** Do not use `$` characters in `SECRET_KEY` or passwords as docker-compose interprets them as variables.
 
 ### Step 2: Generate SSL Certificates (for staging)
 
@@ -190,52 +197,79 @@ docker images | grep nextcloudappstore
 ### Step 4: Start the Staging Environment
 
 ```bash
-# Start PostgreSQL first
-docker-compose up -d postgres
-
-# Wait for PostgreSQL to be ready
-sleep 10
-
 # Start the full stack with initial setup flags
+# This will:
+#   - Create database and run migrations
+#   - Load initial fixtures (categories, etc.)
+#   - Import translations
+#   - Create admin user (from .env credentials)
+#   - Configure GitHub OAuth (if credentials provided)
 LOAD_FIXTURES=true IMPORT_TRANSLATIONS=true docker-compose up -d
 
-# View logs
+# View startup logs (wait for "Starting application server...")
 docker-compose logs -f appstore
 ```
 
-### Step 5: Create Admin User
+The admin user is created automatically using credentials from `.env`:
+- `ADMIN_USERNAME`
+- `ADMIN_EMAIL`  
+- `ADMIN_PASSWORD`
+
+### Step 5: Sync Nextcloud Releases (Requires Internet)
 
 ```bash
-# Create superuser
-docker-compose exec appstore python manage.py createsuperuser \
-    --username admin --email admin@example.com
+# Preview releases that will be synced
+docker-compose exec appstore python manage.py syncnextcloudreleases \
+    --oldest-supported="25.0.0" --print
 
-# Verify email
-docker-compose exec appstore python manage.py verifyemail \
-    --username admin --email admin@example.com
-```
-
-### Step 6: Sync Nextcloud Releases (Requires Internet)
-
-```bash
 # Sync releases from GitHub (requires GITHUB_API_TOKEN in .env)
 docker-compose exec appstore python manage.py syncnextcloudreleases \
     --oldest-supported="25.0.0"
-
-# Verify with a test run first
-docker-compose exec appstore python manage.py syncnextcloudreleases \
-    --oldest-supported="25.0.0" --print
 ```
+
+This syncs Nextcloud server releases (v25.0.0 to latest), which apps use to declare compatibility.
+
+### Step 6: Import Apps from Official App Store (Requires Internet)
+
+**This is the key step for air-gapped deployment** - it imports all apps from the official Nextcloud App Store into your local instance.
+
+```bash
+# Test with a small batch first
+./scripts/sync-apps.sh --limit 10
+
+# Import ALL apps (takes several minutes)
+./scripts/sync-apps.sh
+```
+
+This fetches all apps and their releases from `https://apps.nextcloud.com` and imports them into your local database.
+
+**What gets imported:**
+
+- App metadata (name, summary, description, categories)
+- All release versions with download URLs and signatures
+- Platform compatibility information
+- Screenshots (images hosted on GitHub)
+- Documentation links
+
+**Expected output:**
+
+```text
+Sync complete!
+New apps imported: 342
+Translations added: 342
+Screenshots added: 661
+Total apps: 566
+Total releases: 14031
+```
+
+> **Note:** The sync imports apps compatible with Nextcloud 30.x. Apps for older NC versions are also imported from the general API but may have fewer details.
 
 ### Step 7: Configure GitHub Social Login (Optional)
 
-1. Go to https://github.com/settings/developers
-2. Create new OAuth App:
-   - **Application name:** Nextcloud App Store
-   - **Homepage URL:** https://appstore.example.com
-   - **Authorization callback URL:** https://appstore.example.com/github/login/callback/
+If you provided `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `.env`, GitHub login is configured automatically.
 
-3. Configure in the app:
+To configure manually or update:
+
 ```bash
 docker-compose exec appstore python manage.py setupsocial \
     --github-client-id "YOUR_CLIENT_ID" \
@@ -246,17 +280,36 @@ docker-compose exec appstore python manage.py setupsocial \
 ### Step 8: Verify Staging Environment
 
 ```bash
-# Access the app store
-# HTTP:  http://localhost:8000
-# HTTPS: https://localhost (self-signed cert warning expected)
+# Check container status
+docker-compose ps
 
-# Check health
-curl -k https://localhost/health/
+# View logs
+docker-compose logs appstore
 ```
+
+**Access URLs:**
+
+| URL | Description |
+|-----|-------------|
+| `https://localhost` | App Store (accept self-signed cert) |
+| `https://localhost/admin/` | Admin Panel |
+
+**Expected result:** The App Store homepage loads with:
+
+- Categories in the sidebar
+- Apps listed with names, descriptions, and screenshots
+- Clicking an app shows its detail page with download links
 
 ---
 
 ## Part 2: Export for Air-Gapped Transfer
+
+> **⚠️ Important Air-Gap Considerations:**
+>
+> - App download URLs point to external sources (GitHub, etc.) which won't work offline
+> - Screenshots are hosted on GitHub and won't load without internet
+> - For true air-gapped use, you may need to mirror app archives locally
+> - The database export includes all app metadata for browsing/searching
 
 ### Step 1: Export Docker Images
 
@@ -269,6 +322,7 @@ chmod +x scripts/*.sh scripts/db/*.sh
 ```
 
 This creates in `exports/`:
+
 - `nextcloudappstore_latest_TIMESTAMP.tar.gz` - App Store image
 - `postgres_15-alpine_TIMESTAMP.tar.gz` - PostgreSQL image
 - `nginx_alpine_TIMESTAMP.tar.gz` - Nginx image
@@ -277,36 +331,43 @@ This creates in `exports/`:
 ### Step 2: Export Database
 
 ```bash
-# Set database credentials
-export DATABASE_HOST=localhost
-export DATABASE_PORT=5432
-export DATABASE_USER=nextcloudappstore
-export DATABASE_PASSWORD=your_password
-
-# Export database
+# Export database (runs pg_dump inside the postgres container)
 ./scripts/db/export-db.sh
 ```
 
 This creates:
-- `exports/appstore_db_TIMESTAMP.sql.gz` - Database dump
+
+- `exports/appstore_db_TIMESTAMP.sql.gz` - Complete database dump (~5-10MB)
 - `exports/appstore_db_TIMESTAMP.sql.gz.sha256` - Checksum
+
+**The database includes:**
+
+- All 566 apps with metadata
+- 14,000+ release versions
+- 661 screenshot URLs
+- Categories and translations
+- Admin user account
 
 ### Step 3: Prepare Transfer Package
 
 ```bash
-# The exports/ directory contains everything needed
+# View what will be transferred
 ls -la exports/
 
 # Create a single archive for transfer
 tar -cvf appstore-deployment-package.tar exports/ k8s/ config/ nginx/
+
+# Check size
+ls -lh appstore-deployment-package.tar
 ```
 
 ### Step 4: Transfer to Disconnected Environment
 
 Transfer `appstore-deployment-package.tar` to your disconnected server using:
+
 - USB drive
 - Secure file transfer
-- Air-gapped network
+- Air-gapped network bridge
 
 ---
 
@@ -415,12 +476,15 @@ kubectl apply -f k8s/ingress.yaml
 ### Step 7: Import Database
 
 ```bash
-# Get PostgreSQL pod name
+# Find the latest database dump
+DB_DUMP=$(ls exports/appstore_db_*.sql.gz | sort -r | head -1)
+
+# Import using the script (k8s mode)
+./scripts/db/import-db.sh "${DB_DUMP}" k8s
+
+# Or manually:
 PG_POD=$(kubectl get pod -l app=postgres -n nextcloud-appstore \
     -o jsonpath='{.items[0].metadata.name}')
-
-# Import database dump
-DB_DUMP=$(ls exports/appstore_db_*.sql.gz | sort -r | head -1)
 gunzip -c "${DB_DUMP}" | kubectl exec -i "${PG_POD}" \
     -n nextcloud-appstore -- psql -U nextcloudappstore -d nextcloudappstore
 ```
