@@ -81,8 +81,8 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 
 ```bash
 # Clone this repository
-git clone <your-repo-url> appstore-deployment
-cd appstore-deployment
+git clone https://github.com/allamiro/Nextcloud-appstore.git
+cd Nextcloud-appstore
 
 # Copy environment template
 cp .env.example .env
