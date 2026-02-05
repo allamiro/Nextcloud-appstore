@@ -1,0 +1,119 @@
+# =============================================================================
+# Nextcloud App Store - Docker Compose for Staging Build
+# =============================================================================
+# Use this on your internet-connected staging system to build and test
+# before exporting to disconnected Kubernetes environment
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database (for staging/testing)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: appstore-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nextcloudappstore
+      POSTGRES_USER: nextcloudappstore
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme_staging_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/db:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nextcloudappstore -d nextcloudappstore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - appstore-network
+
+  # ---------------------------------------------------------------------------
+  # App Store Application
+  # ---------------------------------------------------------------------------
+  appstore:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APPSTORE_VERSION: ${APPSTORE_VERSION:-master}
+    image: nextcloudappstore:${IMAGE_TAG:-latest}
+    container_name: appstore-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Database configuration
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: nextcloudappstore
+      DATABASE_USER: nextcloudappstore
+      DATABASE_PASSWORD: ${DB_PASSWORD:-changeme_staging_password}
+      
+      # Django settings
+      DJANGO_SETTINGS_MODULE: config.production
+      SECRET_KEY: ${SECRET_KEY:-CHANGE_THIS_IN_PRODUCTION_use_64_char_random_string}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,appstore.local}
+      
+      # Initial setup flags (set to true on first run)
+      LOAD_FIXTURES: ${LOAD_FIXTURES:-false}
+      IMPORT_TRANSLATIONS: ${IMPORT_TRANSLATIONS:-false}
+      
+      # Superuser creation (optional)
+      DJANGO_SUPERUSER_USERNAME: ${ADMIN_USERNAME:-}
+      DJANGO_SUPERUSER_EMAIL: ${ADMIN_EMAIL:-}
+      DJANGO_SUPERUSER_PASSWORD: ${ADMIN_PASSWORD:-}
+      
+      # GitHub OAuth (optional, for syncing releases)
+      GITHUB_API_TOKEN: ${GITHUB_API_TOKEN:-}
+      
+      # Social login (optional)
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      SITE_DOMAIN: ${SITE_DOMAIN:-localhost:8000}
+    volumes:
+      - ./config:/srv/config:ro
+      - static_files:/srv/static
+      - media_files:/srv/media
+      - logs:/srv/logs
+    ports:
+      - "8000:8000"
+    networks:
+      - appstore-network
+
+  # ---------------------------------------------------------------------------
+  # Nginx Reverse Proxy (staging/testing with SSL)
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: appstore-nginx
+    restart: unless-stopped
+    depends_on:
+      - appstore
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - static_files:/srv/static:ro
+      - media_files:/srv/media:ro
+    networks:
+      - appstore-network
+
+volumes:
+  postgres_data:
+    driver: local
+  static_files:
+    driver: local
+  media_files:
+    driver: local
+  logs:
+    driver: local
+
+networks:
+  appstore-network:
+    driver: bridge

@@ -1,0 +1,47 @@
+# =============================================================================
+# Nextcloud App Store Deployment - Git Ignore
+# =============================================================================
+
+# Exports directory (large files, generated)
+exports/
+*.tar
+*.tar.gz
+
+# Environment files with secrets
+.env
+.env.local
+.env.production
+
+# SSL certificates
+nginx/ssl/*.crt
+nginx/ssl/*.key
+nginx/ssl/*.pem
+!nginx/ssl/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+ENV/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kubernetes secrets with actual values
+k8s/secrets-production.yaml

@@ -1,0 +1,66 @@
+# =============================================================================
+# Persistent Volume Claims for Nextcloud App Store
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: database
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName: standard  # Uncomment and adjust for your cluster
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: appstore-static-pvc
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: static
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: appstore-media-pvc
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: media
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: appstore-logs-pvc
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: logs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

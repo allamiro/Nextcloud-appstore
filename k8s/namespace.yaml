@@ -1,0 +1,10 @@
+# =============================================================================
+# Kubernetes Namespace for Nextcloud App Store
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: namespace

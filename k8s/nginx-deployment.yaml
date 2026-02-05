@@ -1,0 +1,193 @@
+# =============================================================================
+# Nginx Deployment for Nextcloud App Store
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: proxy
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+        use epoll;
+        multi_accept on;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log /var/log/nginx/access.log main;
+
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+
+        gzip on;
+        gzip_vary on;
+        gzip_proxied any;
+        gzip_comp_level 6;
+        gzip_types text/plain text/css text/xml application/json application/javascript 
+                   application/xml application/xml+rss text/javascript;
+
+        upstream appstore {
+            server appstore-service:8000;
+            keepalive 32;
+        }
+
+        server {
+            listen 80;
+            listen [::]:80;
+            server_name _;
+
+            add_header X-Content-Type-Options nosniff always;
+            add_header X-Frame-Options DENY always;
+            add_header X-XSS-Protection "1; mode=block" always;
+
+            client_max_body_size 75M;
+
+            location /static/ {
+                alias /srv/static/;
+                expires 30d;
+                add_header Cache-Control "public, immutable";
+            }
+
+            location /media/ {
+                alias /srv/media/;
+                expires 7d;
+                add_header Cache-Control "public";
+            }
+
+            location /health/ {
+                access_log off;
+                uwsgi_pass appstore;
+                include uwsgi_params;
+            }
+
+            location / {
+                uwsgi_pass appstore;
+                include uwsgi_params;
+                uwsgi_read_timeout 60s;
+                uwsgi_send_timeout 60s;
+                
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+        }
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: proxy
+    app: nginx
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+        app.kubernetes.io/name: nextcloud-appstore
+        app.kubernetes.io/component: proxy
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: static-files
+              mountPath: /srv/static
+              readOnly: true
+            - name: media-files
+              mountPath: /srv/media
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health/
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: nginx-config
+        - name: static-files
+          persistentVolumeClaim:
+            claimName: appstore-static-pvc
+        - name: media-files
+          persistentVolumeClaim:
+            claimName: appstore-media-pvc
+
+---
+# =============================================================================
+# Nginx Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: proxy
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+      name: http
+  selector:
+    app: nginx

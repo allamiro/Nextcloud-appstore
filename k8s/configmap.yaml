@@ -1,0 +1,167 @@
+# =============================================================================
+# ConfigMap for Nextcloud App Store
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: appstore-config
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: config
+data:
+  # Django settings
+  DJANGO_SETTINGS_MODULE: "config.production"
+  ALLOWED_HOSTS: "appstore.example.com,localhost"
+  DEBUG: "False"
+  USE_HTTPS: "True"
+  
+  # Database settings (non-sensitive)
+  DATABASE_HOST: "postgres-service"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "nextcloudappstore"
+  DATABASE_USER: "nextcloudappstore"
+  
+  # Email settings
+  EMAIL_HOST: "localhost"
+  EMAIL_PORT: "25"
+  EMAIL_USE_TLS: "False"
+  DEFAULT_FROM_EMAIL: "appstore@example.com"
+  
+  # Application settings
+  LOAD_FIXTURES: "false"
+  IMPORT_TRANSLATIONS: "false"
+  
+  # Site domain for social login
+  SITE_DOMAIN: "appstore.example.com"
+
+---
+# =============================================================================
+# ConfigMap for uWSGI Configuration
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: uwsgi-config
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: uwsgi
+data:
+  uwsgi.ini: |
+    [uwsgi]
+    chdir = /srv/appstore
+    module = nextcloudappstore.wsgi:application
+    wsgi-file = /srv/appstore/nextcloudappstore/wsgi.py
+    master = true
+    processes = 4
+    threads = 2
+    enable-threads = true
+    uid = nextcloudappstore
+    gid = nextcloudappstore
+    socket = 0.0.0.0:8000
+    protocol = uwsgi
+    buffer-size = 65535
+    post-buffering = 65535
+    harakiri = 60
+    harakiri-verbose = true
+    http-timeout = 60
+    socket-timeout = 60
+    reload-on-rss = 512
+    max-requests = 5000
+    max-worker-lifetime = 3600
+    vacuum = true
+    die-on-term = true
+    log-date = true
+    logto = /srv/logs/uwsgi.log
+    log-maxsize = 104857600
+    lazy-apps = true
+    thunder-lock = true
+    optimize = 2
+
+---
+# =============================================================================
+# ConfigMap for Production Python Settings
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: python-config
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: python
+data:
+  __init__.py: ""
+  production.py: |
+    import os
+    from nextcloudappstore.settings.base import *
+    
+    SECRET_KEY = os.environ.get('SECRET_KEY', 'CHANGE_THIS_IN_PRODUCTION')
+    ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost').split(',')
+    DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
+    
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ.get('DATABASE_NAME', 'nextcloudappstore'),
+            'USER': os.environ.get('DATABASE_USER', 'nextcloudappstore'),
+            'PASSWORD': os.environ.get('DATABASE_PASSWORD', 'password'),
+            'HOST': os.environ.get('DATABASE_HOST', '127.0.0.1'),
+            'PORT': os.environ.get('DATABASE_PORT', '5432'),
+        }
+    }
+    
+    STATIC_URL = '/static/'
+    STATIC_ROOT = '/srv/static/'
+    MEDIA_URL = os.environ.get('MEDIA_URL', '/media/')
+    MEDIA_ROOT = '/srv/media/'
+    
+    DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'appstore@example.com')
+    EMAIL_HOST = os.environ.get('EMAIL_HOST', 'localhost')
+    EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '25'))
+    
+    GITHUB_API_TOKEN = os.environ.get('GITHUB_API_TOKEN', '')
+    RECAPTCHA_PUBLIC_KEY = os.environ.get('RECAPTCHA_PUBLIC_KEY', '')
+    RECAPTCHA_PRIVATE_KEY = os.environ.get('RECAPTCHA_PRIVATE_KEY', '')
+    
+    if not RECAPTCHA_PUBLIC_KEY or not RECAPTCHA_PRIVATE_KEY:
+        SILENCED_SYSTEM_CHECKS = ['captcha.recaptcha_test_key_error']
+    
+    LOG_FILE = os.environ.get('LOG_FILE', '/srv/logs/appstore.log')
+    LOGGING = {
+        'version': 1,
+        'disable_existing_loggers': False,
+        'formatters': {
+            'verbose': {
+                'format': '{levelname} {asctime} {module} {message}',
+                'style': '{',
+            },
+        },
+        'handlers': {
+            'file': {
+                'level': 'INFO',
+                'class': 'logging.FileHandler',
+                'filename': LOG_FILE,
+                'formatter': 'verbose',
+            },
+            'console': {
+                'level': 'INFO',
+                'class': 'logging.StreamHandler',
+                'formatter': 'verbose',
+            },
+        },
+        'root': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+        },
+    }
+    
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    USE_X_FORWARDED_HOST = True
+    USE_X_FORWARDED_PORT = True
+    
+    if os.environ.get('USE_HTTPS', 'True').lower() == 'true':
+        SECURE_SSL_REDIRECT = False
+        SESSION_COOKIE_SECURE = True
+        CSRF_COOKIE_SECURE = True

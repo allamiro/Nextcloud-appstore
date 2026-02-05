@@ -1,0 +1,145 @@
+# =============================================================================
+# CronJob for Syncing Nextcloud Releases (run on staging before export)
+# =============================================================================
+# Note: This requires internet access to GitHub API
+# Run this on staging before exporting to disconnected environment
+# =============================================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sync-nextcloud-releases
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: cronjob
+spec:
+  # Run every hour
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          containers:
+            - name: sync-releases
+              image: nextcloudappstore:latest
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - manage.py
+                - syncnextcloudreleases
+                - --oldest-supported=25.0.0
+              envFrom:
+                - configMapRef:
+                    name: appstore-config
+                - secretRef:
+                    name: appstore-secrets
+              volumeMounts:
+                - name: python-config
+                  mountPath: /srv/config/__init__.py
+                  subPath: __init__.py
+                - name: python-config
+                  mountPath: /srv/config/production.py
+                  subPath: production.py
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "512Mi"
+                  cpu: "500m"
+          volumes:
+            - name: python-config
+              configMap:
+                name: python-config
+
+---
+# =============================================================================
+# Job for Initial Setup (run once after first deployment)
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: appstore-initial-setup
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: setup
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:15-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until pg_isready -h postgres-service -p 5432 -U nextcloudappstore; do
+                echo "Waiting for PostgreSQL..."
+                sleep 2
+              done
+      containers:
+        - name: setup
+          image: nextcloudappstore:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "Running migrations..."
+              python manage.py migrate --noinput
+              
+              echo "Loading fixtures..."
+              python manage.py loaddata nextcloudappstore/core/fixtures/*.json || true
+              
+              echo "Importing translations..."
+              python manage.py importdbtranslations || true
+              
+              echo "Collecting static files..."
+              python manage.py collectstatic --noinput
+              
+              echo "Initial setup complete!"
+          envFrom:
+            - configMapRef:
+                name: appstore-config
+            - secretRef:
+                name: appstore-secrets
+          volumeMounts:
+            - name: static-files
+              mountPath: /srv/static
+            - name: python-config
+              mountPath: /srv/config/__init__.py
+              subPath: __init__.py
+            - name: python-config
+              mountPath: /srv/config/production.py
+              subPath: production.py
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+      volumes:
+        - name: static-files
+          persistentVolumeClaim:
+            claimName: appstore-static-pvc
+        - name: python-config
+          configMap:
+            name: python-config

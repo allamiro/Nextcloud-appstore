@@ -1,0 +1,136 @@
+# =============================================================================
+# App Store Deployment
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: appstore
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: application
+    app: appstore
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: appstore
+  template:
+    metadata:
+      labels:
+        app: appstore
+        app.kubernetes.io/name: nextcloud-appstore
+        app.kubernetes.io/component: application
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until pg_isready -h postgres-service -p 5432 -U nextcloudappstore; do
+                echo "Waiting for PostgreSQL..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready!"
+          envFrom:
+            - configMapRef:
+                name: appstore-config
+      containers:
+        - name: appstore
+          image: nextcloudappstore:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: uwsgi
+          envFrom:
+            - configMapRef:
+                name: appstore-config
+            - secretRef:
+                name: appstore-secrets
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: static-files
+              mountPath: /srv/static
+            - name: media-files
+              mountPath: /srv/media
+            - name: logs
+              mountPath: /srv/logs
+            - name: uwsgi-config
+              mountPath: /srv/config/uwsgi.ini
+              subPath: uwsgi.ini
+            - name: python-config
+              mountPath: /srv/config/__init__.py
+              subPath: __init__.py
+            - name: python-config
+              mountPath: /srv/config/production.py
+              subPath: production.py
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: static-files
+          persistentVolumeClaim:
+            claimName: appstore-static-pvc
+        - name: media-files
+          persistentVolumeClaim:
+            claimName: appstore-media-pvc
+        - name: logs
+          persistentVolumeClaim:
+            claimName: appstore-logs-pvc
+        - name: uwsgi-config
+          configMap:
+            name: uwsgi-config
+        - name: python-config
+          configMap:
+            name: python-config
+
+---
+# =============================================================================
+# App Store Service
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: appstore-service
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: application
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: uwsgi
+  selector:
+    app: appstore
