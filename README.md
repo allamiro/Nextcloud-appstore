@@ -103,7 +103,7 @@ This token is **required** for syncing Nextcloud releases from GitHub.
 
 5. Click **"Generate token"**
 6. **Copy the token immediately** (starts with `ghp_...`) - you won't see it again!
-7. Save this as `GITHUB_API_TOKEN` in your `.env` file
+7. You will needs this for the .env file. Make sure its saved.Save this as `GITHUB_API_TOKEN` in your `.env` file
 
 #### B. GitHub OAuth App (Optional - For Social Login)
 
