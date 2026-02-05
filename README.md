@@ -371,27 +371,43 @@ Transfer `appstore-deployment-package.tar` to your disconnected server using:
 
 ---
 
-## Part 3: Kubernetes Deployment (Disconnected)
+## Part 3: Kubernetes Deployment (Air-Gapped)
 
-### Prerequisites on Disconnected Server
+### Prerequisites
 
-- Kubernetes cluster (1.24+)
+- Kubernetes cluster (Docker Desktop, Tanzu, or any K8s 1.24+)
 - kubectl configured
 - Docker installed (for loading images)
-- (Optional) Private container registry
+
+### Kubernetes Manifest Files
+
+Files are numbered in deployment order:
+
+```
+k8s/
+├── 01-namespace.yaml      # Namespace
+├── 02-secrets.yaml        # App and DB secrets
+├── 03-configmap.yaml      # Django, uWSGI config
+├── 04-pvc.yaml            # Persistent volumes
+├── 05-postgres.yaml       # PostgreSQL deployment + service
+├── 06-appstore.yaml       # App Store deployment + service
+├── 07-nginx.yaml          # Nginx with SSL + NodePort service
+├── 08-cronjob.yaml        # Optional scheduled tasks
+├── 09-tls-secret.yaml     # TLS certificates (generated)
+├── generate-certs.sh      # Script to generate SSL certs
+└── certs/                 # Generated certificate files
+```
 
 ### Step 1: Extract Transfer Package
 
 ```bash
-# Extract the package
 tar -xvf appstore-deployment-package.tar
-cd exports
 ```
 
 ### Step 2: Load Docker Images
 
 ```bash
-# Load images into Docker
+cd exports
 for file in *.tar.gz; do
     echo "Loading ${file}..."
     gunzip -c "${file}" | docker load
@@ -399,107 +415,102 @@ done
 
 # Verify images
 docker images | grep -E "(nextcloudappstore|postgres|nginx)"
+cd ..
 ```
 
-### Step 3: (Optional) Push to Private Registry
-
-If using a private registry:
+### Step 3: Generate SSL Certificates
 
 ```bash
-REGISTRY=your-registry.example.com:5000
+# Generate CA chain and server certificates
+sh k8s/generate-certs.sh
 
-# Tag images
-docker tag nextcloudappstore:latest ${REGISTRY}/nextcloudappstore:latest
-docker tag postgres:15-alpine ${REGISTRY}/postgres:15-alpine
-docker tag nginx:alpine ${REGISTRY}/nginx:alpine
-
-# Push images
-docker push ${REGISTRY}/nextcloudappstore:latest
-docker push ${REGISTRY}/postgres:15-alpine
-docker push ${REGISTRY}/nginx:alpine
-
-# Update Kubernetes manifests
-sed -i "s|image: nextcloudappstore:|image: ${REGISTRY}/nextcloudappstore:|g" k8s/*.yaml
-sed -i "s|image: postgres:|image: ${REGISTRY}/postgres:|g" k8s/*.yaml
-sed -i "s|image: nginx:|image: ${REGISTRY}/nginx:|g" k8s/*.yaml
+# This creates:
+# - k8s/certs/           (certificate files)
+# - k8s/09-tls-secret.yaml (K8s secret with certs)
 ```
 
-### Step 4: Configure Kubernetes Secrets
-
-**IMPORTANT: Update secrets before applying!**
+### Step 4: Deploy to Kubernetes
 
 ```bash
-# Generate base64 encoded secrets
-echo -n "your-64-char-secret-key" | base64
-echo -n "your-database-password" | base64
-
-# Edit secrets.yaml with your values
-nano k8s/secrets.yaml
-```
-
-### Step 5: Create TLS Secret (Custom CA Chain)
-
-For Tanzu with custom CA-signed certificates:
-
-```bash
-# Create TLS secret with CA chain
-kubectl create secret generic appstore-tls \
-    --from-file=tls.crt=/path/to/server-chain.crt \
-    --from-file=tls.key=/path/to/server.key \
-    --from-file=ca.crt=/path/to/ca-chain.crt \
-    -n nextcloud-appstore
-```
-
-### Step 6: Deploy to Kubernetes (Tanzu)
-
-```bash
-# Apply manifests in order (files are numbered for convenience):
+# Apply manifests in order:
 kubectl apply -f k8s/01-namespace.yaml
 kubectl apply -f k8s/02-secrets.yaml
 kubectl apply -f k8s/03-configmap.yaml
 kubectl apply -f k8s/04-pvc.yaml
 kubectl apply -f k8s/05-postgres.yaml
 
-# Wait for PostgreSQL
-kubectl wait --for=condition=ready pod -l app=postgres \
-    -n nextcloud-appstore --timeout=120s
+# Wait for PostgreSQL to be ready
+sleep 15
+kubectl get pods -n nextcloud-appstore
 
+# Deploy app, TLS secret, and nginx
 kubectl apply -f k8s/06-appstore.yaml
+kubectl apply -f k8s/09-tls-secret.yaml
 kubectl apply -f k8s/07-nginx.yaml
 
-# Nginx service is LoadBalancer type - no ingress needed
-# Optional: Apply cronjob for scheduled tasks
-# kubectl apply -f k8s/08-cronjob.yaml
+# Wait for all pods
+sleep 30
+kubectl get pods -n nextcloud-appstore
 ```
 
-### Step 7: Import Database
+### Step 5: Import Database
 
 ```bash
-# Find the latest database dump
+# Import the database
 DB_DUMP=$(ls exports/appstore_db_*.sql.gz | sort -r | head -1)
-
-# Import using the script (k8s mode)
-./scripts/db/import-db.sh "${DB_DUMP}" k8s
-
-# Or manually:
-PG_POD=$(kubectl get pod -l app=postgres -n nextcloud-appstore \
-    -o jsonpath='{.items[0].metadata.name}')
-gunzip -c "${DB_DUMP}" | kubectl exec -i "${PG_POD}" \
-    -n nextcloud-appstore -- psql -U nextcloudappstore -d nextcloudappstore
+sh scripts/db/import-db.sh "${DB_DUMP}" k8s
 ```
 
-### Step 8: Run Initial Setup Job (if not importing database)
+### Step 6: Create Admin Account
+
+```bash
+# Create a superuser for admin access
+kubectl exec -it deployment/appstore -n nextcloud-appstore -- \
+    python manage.py createsuperuser
+```
+
+Follow the prompts to enter username, email, and password.
+
+### Step 7: Verify Deployment
+
+```bash
+# Check all pods are running
+kubectl get pods -n nextcloud-appstore
+
+# Check services
+kubectl get svc -n nextcloud-appstore
+```
+
+### Step 8: Access the Application
+
+| URL | Description |
+|-----|-------------|
+| https://localhost:30443 | HTTPS (recommended) |
+| http://localhost:30080 | HTTP (redirects to HTTPS) |
+| https://localhost:30443/admin/ | Django Admin Panel |
+
+**Note:** You'll see a browser SSL warning (self-signed cert). Click "Advanced" → "Proceed" to continue.
+
+**Optional - Trust the CA on macOS:**
+
+```bash
+sudo security add-trusted-cert -d -r trustRoot \
+    -k /Library/Keychains/System.keychain \
+    k8s/certs/root-ca.crt
+```
+
+### Step 9: Run Initial Setup Job (if not importing database)
 
 ```bash
 # Only if starting fresh without database import
-kubectl apply -f k8s/cronjob.yaml
+kubectl apply -f k8s/08-cronjob.yaml
 
 # Trigger the initial setup job
 kubectl create job --from=cronjob/appstore-initial-setup \
     initial-setup-manual -n nextcloud-appstore
 ```
 
-### Step 9: Verify Deployment
+### Step 10: Verify Deployment (Alternative)
 
 ```bash
 # Check all pods are running
