@@ -532,9 +532,10 @@ curl -k https://localhost:30443/health/
 
 | URL | Description |
 |-----|-------------|
-| https://localhost:30443 | HTTPS (recommended) |
-| http://localhost:30080 | HTTP (redirects to HTTPS) |
+| https://localhost:30443 | App Store (HTTPS) |
 | https://localhost:30443/admin/ | Django Admin Panel |
+| https://localhost:30444/apps/ | File Server (App Archives) |
+| http://localhost:30080 | HTTP (redirects to HTTPS) |
 
 **Note:** You'll see a browser SSL warning (self-signed cert). Click "Advanced" → "Proceed" to continue.
 
