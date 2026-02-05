@@ -76,6 +76,62 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 - Docker and Docker Compose installed
 - Git installed
 - Minimum 4GB RAM, 20GB disk space
+- GitHub account (for API token and optional OAuth)
+
+### Step 0: Configure GitHub Credentials (Before Creating .env)
+
+Before setting up the App Store, you need to create GitHub credentials. There are **two types** required:
+
+#### A. GitHub Personal Access Token (Required)
+
+This token is **required** for syncing Nextcloud releases from GitHub.
+
+1. Go to **https://github.com/settings/tokens**
+2. Click **"Generate new token (classic)"**
+3. Configure the token:
+
+| Field | Value |
+|-------|-------|
+| **Note** | `nextcloud-appstore-sync` |
+| **Expiration** | Select duration (recommend 90 days or "No expiration" for production) |
+
+4. Select these **scopes** (minimum required):
+
+| Scope | Description |
+|-------|-------------|
+| ☑️ `public_repo` | Access public repositories (under `repo`) |
+
+5. Click **"Generate token"**
+6. **Copy the token immediately** (starts with `ghp_...`) - you won't see it again!
+7. Save this as `GITHUB_API_TOKEN` in your `.env` file
+
+#### B. GitHub OAuth App (Optional - For Social Login)
+
+This allows users to log in to the App Store using their GitHub account.
+
+1. Go to **https://github.com/settings/developers**
+2. Click **"New OAuth App"**
+3. Fill in the registration form:
+
+| Field | Example Value |
+|-------|---------------|
+| **Application name** | `Nextcloud App Store` |
+| **Homepage URL** | `https://appstore.example.com` |
+| **Application description** | `Nextcloud App Store - Browse and download apps for Nextcloud` |
+| **Authorization callback URL** | `https://appstore.example.com/github/login/callback/` |
+
+4. Click **"Register application"**
+5. On the next page, you'll see your **Client ID**
+6. Click **"Generate a new client secret"**
+7. **Copy both values immediately:**
+   - `GITHUB_CLIENT_ID` → Client ID
+   - `GITHUB_CLIENT_SECRET` → Client Secret (shown only once!)
+
+> **Note:** For local development/staging, use:
+> - Homepage URL: `https://localhost`
+> - Callback URL: `https://localhost/github/login/callback/`
+
+---
 
 ### Step 1: Clone and Configure
 
