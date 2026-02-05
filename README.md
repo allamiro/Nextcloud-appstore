@@ -31,9 +31,29 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Service Ports
+
+### Docker Compose (Staging)
+
+| Service | Port | URL | Purpose |
+|---------|------|-----|---------|
+| PostgreSQL | 5432 | localhost:5432 | Database |
+| App Store | 8000 | http://localhost:8000 | Django API/UI |
+| Nginx Proxy | 80/443 | https://localhost | SSL Proxy |
+| File Server | 8080/8443 | http://localhost:8080/apps/ | App Archives |
+
+### Kubernetes (Air-Gapped)
+
+| Service | Port | NodePort | URL | Purpose |
+|---------|------|----------|-----|---------|
+| postgres-service | 5432 | - | ClusterIP | Database |
+| appstore-service | 8000 | - | ClusterIP | Django Backend |
+| nginx-service | 80/443 | 30080/30443 | https://localhost:30443 | App Store UI/API |
+| fileserver-service | 80/443 | 30081/30444 | https://localhost:30444/apps/ | App Archives |
+
 ## Directory Structure
 
-```
+```text
 .
 ├── Dockerfile                    # Multi-stage production Docker image
 ├── docker-entrypoint.sh          # Container entrypoint script
@@ -46,24 +66,35 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 ├── nginx/
 │   ├── nginx.conf               # Nginx configuration for staging
 │   └── ssl/                     # SSL certificates directory
+├── fileserver/
+│   └── nginx.conf               # File server nginx config
 ├── k8s/
-│   ├── kustomization.yaml       # Kustomize configuration
-│   ├── namespace.yaml           # Kubernetes namespace
-│   ├── secrets.yaml             # Secrets (passwords, tokens)
-│   ├── configmap.yaml           # ConfigMaps (settings)
-│   ├── pvc.yaml                 # Persistent Volume Claims
-│   ├── postgres-deployment.yaml # PostgreSQL deployment + service
-│   ├── appstore-deployment.yaml # App Store deployment + service
-│   ├── nginx-deployment.yaml    # Nginx deployment + service
-│   ├── ingress.yaml             # Ingress with SSL/TLS
-│   └── cronjob.yaml             # CronJobs for maintenance
+│   ├── 01-namespace.yaml        # Kubernetes namespace
+│   ├── 02-secrets.yaml          # Secrets (passwords, tokens)
+│   ├── 03-configmap.yaml        # ConfigMaps (settings)
+│   ├── 04-pvc.yaml              # Persistent Volume Claims
+│   ├── 05-postgres.yaml         # PostgreSQL deployment + service
+│   ├── 06-appstore.yaml         # App Store deployment + service
+│   ├── 07-nginx.yaml            # Nginx deployment + service
+│   ├── 08-cronjob.yaml          # CronJobs for maintenance
+│   ├── 09-tls-secret.yaml       # TLS certificates (generated)
+│   ├── 10-fileserver.yaml       # File server for app archives
+│   ├── generate-certs.sh        # SSL certificate generator
+│   └── certs/                   # Generated certificates
 ├── scripts/
 │   ├── build-and-export.sh      # Build and export for air-gap transfer
-│   ├── import-and-deploy.sh     # Import and deploy on disconnected env
-│   └── db/
-│       ├── export-db.sh         # Export PostgreSQL database
-│       └── import-db.sh         # Import PostgreSQL database
+│   ├── sync-apps.sh             # Sync apps from official store
+│   ├── db/
+│   │   ├── export-db.sh         # Export PostgreSQL database
+│   │   └── import-db.sh         # Import PostgreSQL database
+│   └── mirror-apps/
+│       ├── 01-extract-urls.sh   # Extract download URLs
+│       ├── 02-download-apps.sh  # Download app archives
+│       └── 03-update-db-urls.sh # Update URLs to local server
 └── exports/                     # Generated export files (gitignored)
+    ├── *.tar.gz                 # Docker images
+    ├── appstore_db_*.sql.gz     # Database dumps
+    └── app-archives/            # Downloaded app files
 ```
 
 ---
@@ -654,6 +685,60 @@ python manage.py createsuperuser
 
 ---
 
+## Full Air-Gap Setup (App Downloads)
+
+For Nextcloud to actually **download and install** apps, you need a local file server hosting the app archives.
+
+### Step 1: Download App Archives (While Online)
+
+```bash
+# Extract all download URLs from database
+sh scripts/mirror-apps/01-extract-urls.sh
+
+# Download all app archives (~13,000+ files, several GB)
+sh scripts/mirror-apps/02-download-apps.sh
+
+# Update database URLs to point to local file server
+FILE_SERVER_URL=https://localhost:30444/apps sh scripts/mirror-apps/03-update-db-urls.sh
+
+# Re-export database with updated URLs
+sh scripts/db/export-db.sh
+```
+
+### Step 2: Deploy File Server (In Air-Gap)
+
+```bash
+# Deploy the file server
+kubectl apply -f k8s/10-fileserver.yaml
+
+# Wait for it to be ready
+kubectl wait --for=condition=ready pod -l app=fileserver \
+    -n nextcloud-appstore --timeout=60s
+```
+
+### Step 3: Copy App Archives to File Server
+
+```bash
+# Get the fileserver pod name
+FS_POD=$(kubectl get pod -l app=fileserver -n nextcloud-appstore \
+    -o jsonpath='{.items[0].metadata.name}')
+
+# Copy all app archives to the file server
+kubectl cp exports/app-archives/files/. \
+    nextcloud-appstore/${FS_POD}:/srv/apps/
+```
+
+### Step 4: Verify File Server
+
+```bash
+# Check files are accessible
+curl -k https://localhost:30444/apps/
+
+# Should list all .tar.gz files
+```
+
+---
+
 ## Nextcloud Integration
 
 Configure your air-gapped Nextcloud server to use this App Store.
@@ -678,14 +763,14 @@ cp k8s/certs/root-ca.crt /path/to/nextcloud/data/
 **Step 3:** Configure DNS or `/etc/hosts` on Nextcloud server:
 
 ```bash
-# Add to /etc/hosts (replace IP with your nginx-service IP)
-echo "10.97.10.197 appstore.local" >> /etc/hosts
+# Add entries for both App Store and File Server
+echo "10.97.10.197 appstore.local files.local" >> /etc/hosts
 ```
 
-To get your nginx-service IP:
+To get your service IPs:
 
 ```bash
-kubectl get svc nginx-service -n nextcloud-appstore
+kubectl get svc -n nextcloud-appstore
 ```
 
 ---

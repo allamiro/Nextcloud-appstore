@@ -104,6 +104,23 @@ services:
     networks:
       - appstore-network
 
+  # ---------------------------------------------------------------------------
+  # File Server for App Archives (mimics air-gapped file server)
+  # ---------------------------------------------------------------------------
+  fileserver:
+    image: nginx:alpine
+    container_name: appstore-fileserver
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./fileserver/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./exports/app-archives/files:/srv/apps:ro
+    networks:
+      - appstore-network
+
 volumes:
   postgres_data:
     driver: local
