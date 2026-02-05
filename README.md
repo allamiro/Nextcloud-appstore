@@ -654,9 +654,52 @@ python manage.py createsuperuser
 
 ---
 
+## Nextcloud Integration
+
+Configure your air-gapped Nextcloud server to use this App Store.
+
+### Option A: Configure Nextcloud to Use Your App Store
+
+**Step 1:** On Nextcloud Server, edit `config/config.php`:
+
+```php
+'appstoreurl' => 'https://appstore.local:30443/api/v1',
+```
+
+**Step 2:** Add your CA certificate to Nextcloud's trust store:
+
+```bash
+# Copy CA cert to Nextcloud container
+cp k8s/certs/root-ca.crt /path/to/nextcloud/data/
+
+# In Nextcloud config.php, add to trusted CAs
+# Or disable SSL verification (not recommended for production):
+'appstoreenabled' => true,
+'appstore.experimental.enabled' => true,
+```
+
+**Step 3:** Configure DNS or `/etc/hosts` on Nextcloud server:
+
+```bash
+# Add to /etc/hosts
+echo "10.97.10.197 appstore.local" >> /etc/hosts
+```
+
+Replace the IP with your nginx-service ClusterIP or LoadBalancer IP.
+
+### Option B: Manual App Installation
+
+If you prefer not to integrate the API:
+
+1. Download app `.tar.gz` files from your App Store
+2. Extract to Nextcloud's `apps/` directory
+3. Enable via `occ app:enable <app_id>`
+
+---
+
 ## Security Notes
 
-1. **Always change default passwords** in `k8s/secrets.yaml`
+1. **Always change default passwords** in `k8s/02-secrets.yaml`
 2. **Generate a unique SECRET_KEY** for production
 3. **Use proper TLS certificates** signed by your custom CA
 4. **Restrict network policies** in Kubernetes
