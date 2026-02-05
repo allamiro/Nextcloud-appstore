@@ -10,11 +10,9 @@ metadata:
   labels:
     app.kubernetes.io/name: nextcloud-appstore
     app.kubernetes.io/component: namespace
-    # Pod Security Standards (Kubernetes 1.25+)
-    pod-security.kubernetes.io/enforce: restricted
+    # Pod Security Standards - using privileged for Docker Desktop compatibility
+    pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/enforce-version: latest
-    pod-security.kubernetes.io/audit: restricted
-    pod-security.kubernetes.io/warn: restricted
   annotations:
     # Description
     description: "Nextcloud App Store - Air-gapped deployment"
