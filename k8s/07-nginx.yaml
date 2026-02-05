@@ -57,11 +57,11 @@ data:
             listen [::]:80;
             server_name _;
             
-            # Health check endpoint (no redirect)
+            # Simple health check for K8s probes (returns 200 OK)
             location /health/ {
                 access_log off;
-                uwsgi_pass appstore;
-                include uwsgi_params;
+                return 200 'OK';
+                add_header Content-Type text/plain;
             }
             
             # Redirect all other traffic to HTTPS
