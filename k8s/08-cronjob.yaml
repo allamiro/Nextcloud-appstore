@@ -42,13 +42,6 @@ spec:
                     name: appstore-config
                 - secretRef:
                     name: appstore-secrets
-              volumeMounts:
-                - name: python-config
-                  mountPath: /srv/config/__init__.py
-                  subPath: __init__.py
-                - name: python-config
-                  mountPath: /srv/config/production.py
-                  subPath: production.py
               resources:
                 requests:
                   memory: "256Mi"
@@ -56,10 +49,6 @@ spec:
                 limits:
                   memory: "512Mi"
                   cpu: "500m"
-          volumes:
-            - name: python-config
-              configMap:
-                name: python-config
 
 ---
 # =============================================================================
@@ -123,12 +112,6 @@ spec:
           volumeMounts:
             - name: static-files
               mountPath: /srv/static
-            - name: python-config
-              mountPath: /srv/config/__init__.py
-              subPath: __init__.py
-            - name: python-config
-              mountPath: /srv/config/production.py
-              subPath: production.py
           resources:
             requests:
               memory: "512Mi"
@@ -140,6 +123,3 @@ spec:
         - name: static-files
           persistentVolumeClaim:
             claimName: appstore-static-pvc
-        - name: python-config
-          configMap:
-            name: python-config

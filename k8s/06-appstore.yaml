@@ -76,12 +76,6 @@ spec:
             - name: uwsgi-config
               mountPath: /srv/config/uwsgi.ini
               subPath: uwsgi.ini
-            - name: python-config
-              mountPath: /srv/config/__init__.py
-              subPath: __init__.py
-            - name: python-config
-              mountPath: /srv/config/production.py
-              subPath: production.py
           livenessProbe:
             tcpSocket:
               port: 8000
@@ -109,9 +103,6 @@ spec:
         - name: uwsgi-config
           configMap:
             name: uwsgi-config
-        - name: python-config
-          configMap:
-            name: python-config
 
 ---
 # =============================================================================
