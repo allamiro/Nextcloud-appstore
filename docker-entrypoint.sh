@@ -31,7 +31,9 @@ python manage.py collectstatic --noinput
 # Load initial fixtures on first run (check if categories exist)
 if [ "${LOAD_FIXTURES:-false}" = "true" ]; then
     echo "Loading initial data fixtures..."
-    python manage.py loaddata nextcloudappstore/core/fixtures/*.json || true
+    for f in nextcloudappstore/core/fixtures/*.json; do
+        python manage.py loaddata "$f" || true
+    done
 fi
 
 # Import translations

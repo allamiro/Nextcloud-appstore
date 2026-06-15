@@ -67,7 +67,7 @@ if [ -d "${K8S_DIR}" ]; then
     fi
     
     echo "  Applying Kubernetes manifests..."
-    kubectl apply -f "${K8S_DIR}/namespace.yaml"
+    kubectl apply -f "${K8S_DIR}/01-namespace.yaml"
     kubectl apply -f "${K8S_DIR}/"
 else
     echo "  ERROR: Kubernetes manifests not found at ${K8S_DIR}"
