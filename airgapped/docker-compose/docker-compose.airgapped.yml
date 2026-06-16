@@ -1,0 +1,135 @@
+# =============================================================================
+# Nextcloud App Store - Air-Gapped Docker Compose
+# =============================================================================
+# Deploys: postgres, appstore, nginx, fileserver
+# Does NOT deploy Nextcloud. For testing with Nextcloud, overlay:
+#   docker compose -f docker-compose.airgapped.yml \
+#                  -f docker-compose.nextcloud-test.yml up -d
+#
+# Prerequisites:
+#   - Images must be loaded with: ./airgapped/scripts/load-images.sh
+#   - DB dump must exist at: airgapped/exports/appstore_db_latest.sql.gz
+#   - App archives (optional) must exist at: airgapped/exports/app-archives/files/
+#   - TLS certs must exist at: ../nginx/ssl/ (generate with k8s/generate-certs.sh)
+#
+# Ports exposed:
+#   App Store HTTPS : https://localhost:30443
+#   Fileserver HTTPS: https://localhost:30444
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: appstore-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nextcloudappstore
+      POSTGRES_USER: nextcloudappstore
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme_airgap_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nextcloudappstore -d nextcloudappstore"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - appstore-network
+
+  db-import:
+    image: postgres:15-alpine
+    container_name: appstore-db-import
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:-changeme_airgap_password}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        DUMP="/exports/appstore_db_latest.sql.gz"
+        if [ ! -f "$$DUMP" ]; then
+          echo "No DB dump found at $$DUMP — starting with empty database."
+          exit 0
+        fi
+        echo "Importing database from $$DUMP ..."
+        gunzip -c "$$DUMP" | psql -h postgres -U nextcloudappstore -d nextcloudappstore --quiet
+        echo "Database import complete."
+    volumes:
+      - ./exports:/exports:ro
+    networks:
+      - appstore-network
+
+  appstore:
+    image: nextcloudappstore:latest
+    container_name: appstore-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: nextcloudappstore
+      DATABASE_USER: nextcloudappstore
+      DATABASE_PASSWORD: ${DB_PASSWORD:-changeme_airgap_password}
+      DJANGO_SETTINGS_MODULE: nextcloudappstore.settings.production
+      SECRET_KEY: ${SECRET_KEY:-CHANGE_THIS_IN_PRODUCTION_use_64_char_random_string}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,appstore.local}
+      LOAD_FIXTURES: "false"
+      IMPORT_TRANSLATIONS: "false"
+      USE_HTTPS: "True"
+      SITE_DOMAIN: ${APPSTORE_DOMAIN:-appstore.local}
+    volumes:
+      - static_files:/srv/static
+      - media_files:/srv/media
+      - logs:/srv/logs
+    networks:
+      - appstore-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: appstore-nginx
+    restart: unless-stopped
+    depends_on:
+      - appstore
+    ports:
+      - "30443:443"
+      - "30080:80"
+    volumes:
+      - ../../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../nginx/ssl:/etc/nginx/ssl:ro
+      - static_files:/srv/static:ro
+      - media_files:/srv/media:ro
+    networks:
+      - appstore-network
+
+  fileserver:
+    image: nginx:alpine
+    container_name: appstore-fileserver
+    restart: unless-stopped
+    ports:
+      - "30444:443"
+      - "30081:80"
+    volumes:
+      - ../../fileserver/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../nginx/ssl:/etc/nginx/ssl:ro
+      - ./exports/app-archives/files:/srv/apps:ro
+    networks:
+      - appstore-network
+
+volumes:
+  postgres_data:
+    driver: local
+  static_files:
+    driver: local
+  media_files:
+    driver: local
+  logs:
+    driver: local
+
+networks:
+  appstore-network:
+    driver: bridge

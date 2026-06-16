@@ -45,3 +45,11 @@ Thumbs.db
 
 # Kubernetes secrets with actual values
 k8s/secrets-production.yaml
+
+# Air-gapped package artifacts (large generated files)
+airgapped/images/*.tar.gz
+airgapped/images/*.tar.gz.sha256
+airgapped/exports/*.sql.gz
+airgapped/exports/*.sql.gz.sha256
+airgapped/exports/app-archives/files/
+nextcloud-appstore-airgap-*.tar.gz

@@ -1,0 +1,74 @@
+# =============================================================================
+# Database Import Job - Air-Gapped Deployment
+# =============================================================================
+# Run this job after PostgreSQL is ready and before starting the App Store.
+# It imports the exported database dump from the staging system.
+#
+# The SQL dump must be available at /exports/appstore_db.sql.gz inside the
+# postgres pod, or pass it via kubectl cp before running this job.
+#
+# Typical usage (after kubectl cp):
+#   kubectl cp airgapped/exports/appstore_db_TIMESTAMP.sql.gz \
+#     nextcloud-appstore/$(kubectl get pod -l app=postgres -n nextcloud-appstore \
+#     -o jsonpath='{.items[0].metadata.name}'):/tmp/appstore_db.sql.gz
+#
+#   kubectl apply -f airgapped/k8s/10-import-db-job.yaml
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: import-appstore-db
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: db-import
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:15-alpine
+          imagePullPolicy: Never
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until pg_isready -h postgres-service -p 5432 -U nextcloudappstore; do
+                echo "Waiting for PostgreSQL..."
+                sleep 2
+              done
+      containers:
+        - name: import-db
+          image: postgres:15-alpine
+          imagePullPolicy: Never
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              DUMP="/tmp/appstore_db.sql.gz"
+              if [ ! -f "${DUMP}" ]; then
+                echo "ERROR: Database dump not found at ${DUMP}"
+                echo "Copy it first with:"
+                echo "  kubectl cp your-dump.sql.gz nextcloud-appstore/<postgres-pod>:/tmp/appstore_db.sql.gz"
+                exit 1
+              fi
+              echo "Importing database dump..."
+              gunzip -c "${DUMP}" | psql -h postgres-service -U nextcloudappstore -d nextcloudappstore --quiet
+              echo "Database import complete."
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secrets
+                  key: POSTGRES_PASSWORD
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

@@ -1,0 +1,187 @@
+# =============================================================================
+# File Server for App Archives - Air-Gapped Deployment
+# Serves mirrored .tar.gz app archives to Nextcloud for offline installation
+# imagePullPolicy: Never — image must be loaded into the node runtime first
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fileserver-config
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: fileserver
+data:
+  nginx.conf: |
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent"';
+
+        access_log /var/log/nginx/access.log main;
+        sendfile on;
+        keepalive_timeout 65;
+
+        server {
+            listen 80;
+            listen [::]:80;
+            server_name _;
+
+            location /health/ {
+                access_log off;
+                return 200 'OK';
+                add_header Content-Type text/plain;
+            }
+
+            location /apps/ {
+                alias /srv/apps/;
+                autoindex on;
+                autoindex_exact_size off;
+                autoindex_localtime on;
+                add_header Cache-Control "public, max-age=3600";
+            }
+
+            location / {
+                return 301 /apps/;
+            }
+        }
+
+        server {
+            listen 443 ssl;
+            listen [::]:443 ssl;
+            server_name _;
+
+            ssl_certificate     /etc/nginx/ssl/tls.crt;
+            ssl_certificate_key /etc/nginx/ssl/tls.key;
+            ssl_protocols TLSv1.2 TLSv1.3;
+
+            location /health/ {
+                access_log off;
+                return 200 'OK';
+                add_header Content-Type text/plain;
+            }
+
+            location /apps/ {
+                alias /srv/apps/;
+                autoindex on;
+                autoindex_exact_size off;
+                autoindex_localtime on;
+                add_header Cache-Control "public, max-age=3600";
+            }
+
+            location / {
+                return 301 /apps/;
+            }
+        }
+    }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fileserver
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: fileserver
+    app: fileserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fileserver
+  template:
+    metadata:
+      labels:
+        app: fileserver
+        app.kubernetes.io/name: nextcloud-appstore
+        app.kubernetes.io/component: fileserver
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 80
+              name: http
+            - containerPort: 443
+              name: https
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: apps
+              mountPath: /srv/apps
+            - name: ssl-certs
+              mountPath: /etc/nginx/ssl
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health/
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health/
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: fileserver-config
+        - name: apps
+          persistentVolumeClaim:
+            claimName: fileserver-apps-pvc
+        - name: ssl-certs
+          secret:
+            secretName: appstore-tls
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fileserver-service
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: fileserver
+spec:
+  type: NodePort
+  ports:
+    - port: 443
+      targetPort: 443
+      nodePort: 30444
+      protocol: TCP
+      name: https
+    - port: 80
+      targetPort: 80
+      nodePort: 30081
+      protocol: TCP
+      name: http
+  selector:
+    app: fileserver

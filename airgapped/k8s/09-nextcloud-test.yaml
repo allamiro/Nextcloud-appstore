@@ -1,0 +1,116 @@
+# =============================================================================
+# Optional Managed Test Nextcloud - Air-Gapped Deployment
+# =============================================================================
+# Apply ONLY when you want a temporary Nextcloud for testing App Store integration.
+# Do NOT apply this if you have an existing Nextcloud deployment.
+#
+# Apply with:
+#   kubectl apply -f airgapped/k8s/09-nextcloud-test.yaml
+#
+# This is intentionally separate from the core manifests (01-08) so the core
+# App Store deploys cleanly without any Nextcloud dependency.
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nextcloud-test-pvc
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: nextcloud-test
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName: standard
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nextcloud-test
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: nextcloud-test
+    app: nextcloud-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nextcloud-test
+  template:
+    metadata:
+      labels:
+        app: nextcloud-test
+        app.kubernetes.io/name: nextcloud-appstore
+        app.kubernetes.io/component: nextcloud-test
+    spec:
+      containers:
+        - name: nextcloud
+          image: nextcloud:stable-apache
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 80
+              name: http
+          env:
+            - name: NEXTCLOUD_ADMIN_USER
+              value: "admin"
+            - name: NEXTCLOUD_ADMIN_PASSWORD
+              value: "change-me-before-deploy"
+            - name: NEXTCLOUD_TRUSTED_DOMAINS
+              value: "localhost nextcloud-test nextcloud-test.nextcloud-appstore.svc.cluster.local"
+            - name: NEXTCLOUD_UPDATE
+              value: "1"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          volumeMounts:
+            - name: nextcloud-data
+              mountPath: /var/www/html
+          livenessProbe:
+            httpGet:
+              path: /status.php
+              port: 80
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /status.php
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: nextcloud-data
+          persistentVolumeClaim:
+            claimName: nextcloud-test-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nextcloud-test-service
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: nextcloud-test
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30081
+      protocol: TCP
+      name: http
+  selector:
+    app: nextcloud-test

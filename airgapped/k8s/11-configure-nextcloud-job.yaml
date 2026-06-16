@@ -1,0 +1,107 @@
+# =============================================================================
+# Configure Nextcloud Job - Air-Gapped Deployment
+# =============================================================================
+# This job configures an existing Nextcloud deployment that is running
+# in the SAME Kubernetes cluster as the App Store.
+#
+# For external Nextcloud (different cluster, compose, or SSH), use the
+# configure-nextcloud-*.sh scripts in airgapped/scripts/ instead.
+#
+# Prerequisites:
+#   - Nextcloud is running and accessible at NEXTCLOUD_K8S_POD_SELECTOR
+#   - App Store is deployed and accessible at APPSTORE_API_URL
+#   - CA cert for the App Store TLS is available (if self-signed)
+#
+# Usage:
+#   kubectl apply -f airgapped/k8s/11-configure-nextcloud-job.yaml
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: configure-nextcloud-script
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: nextcloud-config
+data:
+  configure.sh: |
+    #!/bin/sh
+    set -e
+
+    APPSTORE_API_URL="${APPSTORE_API_URL:-https://appstore.local/api/v1}"
+    NC_NAMESPACE="${NEXTCLOUD_K8S_NAMESPACE:-nextcloud}"
+    NC_SELECTOR="${NEXTCLOUD_K8S_POD_SELECTOR:-app=nextcloud}"
+    NC_CONTAINER="${NEXTCLOUD_K8S_CONTAINER:-nextcloud}"
+
+    echo "Configuring Nextcloud to use local App Store..."
+    echo "  API URL: ${APPSTORE_API_URL}"
+
+    # Find Nextcloud pod
+    NC_POD=$(kubectl get pod -l "${NC_SELECTOR}" -n "${NC_NAMESPACE}" \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+    if [ -z "${NC_POD}" ]; then
+      echo "ERROR: No Nextcloud pod found with selector '${NC_SELECTOR}' in namespace '${NC_NAMESPACE}'"
+      echo "Set NEXTCLOUD_K8S_NAMESPACE and NEXTCLOUD_K8S_POD_SELECTOR env vars to match your deployment."
+      exit 1
+    fi
+
+    echo "Found Nextcloud pod: ${NC_POD}"
+
+    kubectl exec "${NC_POD}" -n "${NC_NAMESPACE}" -c "${NC_CONTAINER}" -- \
+      sudo -u www-data php occ config:system:set appstoreenabled --value=true --type=boolean
+
+    kubectl exec "${NC_POD}" -n "${NC_NAMESPACE}" -c "${NC_CONTAINER}" -- \
+      sudo -u www-data php occ config:system:set appstoreurl --value="${APPSTORE_API_URL}"
+
+    echo "Verifying configuration..."
+    kubectl exec "${NC_POD}" -n "${NC_NAMESPACE}" -c "${NC_CONTAINER}" -- \
+      sudo -u www-data php occ config:system:get appstoreurl
+
+    echo "Nextcloud App Store configuration complete."
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: configure-nextcloud
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: nextcloud-config
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      serviceAccountName: default
+      restartPolicy: OnFailure
+      containers:
+        - name: configure
+          image: bitnami/kubectl:latest
+          imagePullPolicy: Never
+          command: ["/bin/sh", "/scripts/configure.sh"]
+          env:
+            - name: APPSTORE_API_URL
+              value: "https://appstore.local/api/v1"
+            - name: NEXTCLOUD_K8S_NAMESPACE
+              value: "nextcloud"
+            - name: NEXTCLOUD_K8S_POD_SELECTOR
+              value: "app=nextcloud"
+            - name: NEXTCLOUD_K8S_CONTAINER
+              value: "nextcloud"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+      volumes:
+        - name: scripts
+          configMap:
+            name: configure-nextcloud-script
+            defaultMode: 0755

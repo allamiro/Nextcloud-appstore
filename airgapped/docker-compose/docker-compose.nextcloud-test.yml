@@ -1,0 +1,49 @@
+# =============================================================================
+# Optional Managed Test Nextcloud - Air-Gapped Overlay
+# =============================================================================
+# Adds a temporary Nextcloud instance for testing App Store integration.
+# This is NOT a production deployment. Use it only to verify that Nextcloud
+# can query the local App Store API and download apps from the fileserver.
+#
+# Usage (overlay onto the main airgapped compose file):
+#   docker compose \
+#     -f airgapped/docker-compose/docker-compose.airgapped.yml \
+#     -f airgapped/docker-compose/docker-compose.nextcloud-test.yml \
+#     up -d
+#
+# Access: http://localhost:8081
+# Admin:  ${NEXTCLOUD_ADMIN_USER} / ${NEXTCLOUD_ADMIN_PASSWORD}
+#
+# Prerequisites:
+#   - nextcloud:stable-apache image must be loaded (if fully air-gapped)
+#   - Run configure-nextcloud-compose.sh after Nextcloud is up to point it
+#     at the local App Store.
+# =============================================================================
+
+services:
+  nextcloud-test:
+    image: nextcloud:stable-apache
+    container_name: nextcloud-test
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    environment:
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-admin}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:-change-me}
+      NEXTCLOUD_TRUSTED_DOMAINS: >-
+        ${NEXTCLOUD_TRUSTED_DOMAINS:-localhost nextcloud-test}
+      NEXTCLOUD_UPDATE: "1"
+    volumes:
+      - nextcloud_data:/var/www/html
+    networks:
+      - appstore-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/status.php"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  nextcloud_data:
+    driver: local

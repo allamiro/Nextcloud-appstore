@@ -1,0 +1,68 @@
+# =============================================================================
+# ConfigMaps for Nextcloud App Store - Air-Gapped Deployment
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: appstore-config
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: config
+data:
+  DJANGO_SETTINGS_MODULE: "nextcloudappstore.settings.production"
+  ALLOWED_HOSTS: "appstore.local,localhost"
+  DEBUG: "False"
+  USE_HTTPS: "True"
+  DATABASE_HOST: "postgres-service"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "nextcloudappstore"
+  DATABASE_USER: "nextcloudappstore"
+  EMAIL_HOST: "localhost"
+  EMAIL_PORT: "25"
+  EMAIL_USE_TLS: "False"
+  DEFAULT_FROM_EMAIL: "appstore@example.com"
+  LOAD_FIXTURES: "false"
+  IMPORT_TRANSLATIONS: "false"
+  SITE_DOMAIN: "appstore.local"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: uwsgi-config
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: uwsgi
+data:
+  uwsgi.ini: |
+    [uwsgi]
+    chdir = /srv/appstore
+    module = nextcloudappstore.wsgi:application
+    wsgi-file = /srv/appstore/nextcloudappstore/wsgi.py
+    master = true
+    processes = 4
+    threads = 2
+    enable-threads = true
+    uid = nextcloudappstore
+    gid = nextcloudappstore
+    socket = 0.0.0.0:8000
+    protocol = uwsgi
+    buffer-size = 65535
+    post-buffering = 65535
+    harakiri = 60
+    harakiri-verbose = true
+    http-timeout = 60
+    socket-timeout = 60
+    reload-on-rss = 512
+    max-requests = 5000
+    max-worker-lifetime = 3600
+    vacuum = true
+    die-on-term = true
+    log-date = true
+    logto = /srv/logs/uwsgi.log
+    log-maxsize = 104857600
+    lazy-apps = true
+    thunder-lock = true
+    optimize = 2
