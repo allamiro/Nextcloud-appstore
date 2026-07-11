@@ -4,6 +4,8 @@
 
 # Exports directory (large files, generated)
 exports/
+# Per-run backup files written by configure scripts
+.nc-config-backup-*.env
 *.tar
 *.tar.gz
 

@@ -77,6 +77,21 @@ ONLINE (internet required):
   online mirror
       Extract download URLs and download all app .tar.gz archives.
 
+  online apps allowlist <list|add|remove|status> [app_id]
+      Manage the app allowlist (config/app-allowlist.txt).
+
+  online apps check-compat [--nc-version X.Y.Z]
+      Check all approved apps for compatibility with the target NC version.
+
+  online apps report [--nc-version X.Y.Z]
+      Generate COMPATIBILITY_REPORT.csv / .json in exports/.
+
+  online apps mirror-approved [--nc-version X.Y.Z] [--force]
+      Download only approved, compatible app packages with checksums.
+
+  online export [--nc-version X.Y.Z] [--skip-images]
+      Build a complete air-gapped bundle: images + DB + apps + manifest.
+
   online export-db
       Export the current PostgreSQL database to exports/.
 
@@ -133,6 +148,8 @@ cmd_online() {
         up)             online_up "$@" ;;
         sync)           online_sync "$@" ;;
         mirror)         online_mirror ;;
+        apps)           online_apps "$@" ;;
+        export)         online_export "$@" ;;
         export-db)      online_export_db ;;
         configure-nextcloud) online_configure_nextcloud "$@" ;;
         test)           online_test ;;
@@ -249,6 +266,51 @@ online_mirror() {
     echo ""
     info "Mirror complete. Re-export the database to capture rewritten URLs:"
     echo "  $0 online export-db"
+}
+
+online_apps() {
+    local sub="${1:-}"
+    shift || true
+
+    case "${sub}" in
+        allowlist)
+            bash "${SCRIPT_DIR}/apps/manage-allowlist.sh" "$@"
+            ;;
+        check-compat)
+            separator
+            info "Checking app compatibility"
+            separator
+            require_running_appstore
+            bash "${SCRIPT_DIR}/apps/check-compatibility.sh" "$@"
+            ;;
+        report)
+            separator
+            info "Generating compatibility report"
+            separator
+            require_running_appstore
+            bash "${SCRIPT_DIR}/apps/generate-report.sh" "$@"
+            ;;
+        mirror-approved)
+            separator
+            info "Downloading approved compatible app packages"
+            separator
+            require_running_appstore
+            bash "${SCRIPT_DIR}/apps/download-approved.sh" "$@"
+            ;;
+        *)
+            echo "Unknown apps sub-command: '${sub}'"
+            echo "Usage: $0 online apps <allowlist|check-compat|report|mirror-approved>"
+            exit 1
+            ;;
+    esac
+}
+
+online_export() {
+    separator
+    info "Building complete air-gapped export bundle"
+    separator
+    require_running_appstore
+    bash "${SCRIPT_DIR}/export-bundle.sh" "$@"
 }
 
 online_export_db() {

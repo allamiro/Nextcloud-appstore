@@ -1,0 +1,53 @@
+# =============================================================================
+# App Allowlist — Approved apps for air-gapped export
+# =============================================================================
+# One app ID per line (the technical ID from the Nextcloud App Store).
+# Lines beginning with '#' and blank lines are ignored.
+#
+# Usage:
+#   ./scripts/apps/manage-allowlist.sh list
+#   ./scripts/apps/manage-allowlist.sh add calendar
+#   ./scripts/apps/manage-allowlist.sh remove calendar
+#
+# When this file is populated, only the listed apps will be:
+#   - Included in compatibility checks
+#   - Downloaded during approved-app mirroring
+#   - Included in the air-gapped export bundle
+#
+# To include ALL synced apps (no filtering), leave this file empty.
+# =============================================================================
+
+# Core collaboration apps — uncomment what you need
+# calendar
+# contacts
+# tasks
+# deck
+# notes
+# mail
+
+# Files and storage
+# files_external
+# groupfolders
+# files_pdfviewer
+# files_texteditor
+# files_rightclick
+
+# Security and authentication
+# twofactor_totp
+# twofactor_backupcodes
+# twofactor_webauthn
+# user_ldap
+# user_saml
+
+# Productivity
+# richdocuments
+# onlyoffice
+# forms
+# polls
+# spreed
+
+# Administration
+# admin_audit
+# bruteforcesettings
+# suspicious_login
+# serverinfo
