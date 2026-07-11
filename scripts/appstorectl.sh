@@ -61,27 +61,29 @@ usage() {
 Nextcloud App Store Deployment Toolkit
 Usage: $(basename "$0") <stage> <action> [target] [options]
 
-ONLINE (internet required):
+ONLINE (internet required) — first-time workflow:
+  online up
+      Start the full stack: App Store + Nextcloud + databases + nginx + fileserver.
+      Nextcloud auto-installs on first boot (takes ~1 min after the container starts).
+
+  online setup-nextcloud
+      Install the CA certificate inside the Nextcloud container and configure it
+      to use the local App Store. Run this once after 'online up'.
+
   online audit
       Show repo structure, image status, and environment summary.
-
-  online up
-      Start the App Store staging stack (docker-compose.yml).
-
-  online up managed-nextcloud
-      Also start the optional managed test Nextcloud service.
 
   online sync [--limit N]
       Sync all app metadata from the official Nextcloud App Store.
 
   online mirror
-      Extract download URLs and download all app .tar.gz archives.
+      Download all app .tar.gz archives and rewrite DB URLs to local fileserver.
 
   online apps allowlist <list|add|remove|status> [app_id]
       Manage the app allowlist (config/app-allowlist.txt).
 
   online apps check-compat [--nc-version X.Y.Z]
-      Check all approved apps for compatibility with the target NC version.
+      Check approved apps for compatibility with the target Nextcloud version.
 
   online apps report [--nc-version X.Y.Z]
       Generate COMPATIBILITY_REPORT.csv / .json in exports/.
@@ -90,14 +92,10 @@ ONLINE (internet required):
       Download only approved, compatible app packages with checksums.
 
   online export [--nc-version X.Y.Z] [--skip-images]
-      Build a complete air-gapped bundle: images + DB + apps + manifest.
+      Build the complete air-gapped bundle: images + DB + apps + manifest.
 
   online export-db
-      Export the current PostgreSQL database to exports/.
-
-  online configure-nextcloud <target>
-      Configure a Nextcloud instance to use the local App Store.
-      Targets: managed-nextcloud | external-compose | external-k8s | external-ssh
+      Export the App Store PostgreSQL database to exports/.
 
   online test
       Validate the staging deployment is healthy.
@@ -109,25 +107,26 @@ PACKAGE:
       --appstore-only              Same as default; explicit flag.
       --include-managed-nextcloud  Also include nextcloud:stable-apache image.
 
-AIRGAP (no internet required):
+AIRGAP (no internet required) — first-time workflow:
   airgap load-images
-      Load all images from airgapped/images/ into Docker.
+      Load all Docker images from airgapped/images/ (App Store + Nextcloud).
 
   airgap deploy compose
-      Deploy the App Store stack with Docker Compose (air-gapped).
+      Deploy the full stack: Nextcloud + App Store + databases + nginx + fileserver.
+      Imports the App Store database from the bundle on first run.
 
   airgap deploy k8s
-      Deploy the App Store stack on Kubernetes (air-gapped).
+      Deploy the full stack on Kubernetes using pre-loaded images.
 
-  airgap configure-nextcloud <target>
-      Configure a Nextcloud instance to use the local App Store.
-      Targets: external-compose | external-k8s | external-ssh | managed-nextcloud
+  airgap configure-nextcloud
+      Connect the deployed Nextcloud instance to the local App Store.
+      Installs CA cert, sets appstoreurl, tests connectivity, rolls back on failure.
 
   airgap test compose
-      Validate the Docker Compose air-gapped deployment.
+      Validate the Docker Compose deployment (services, DB integrity, NC integration).
 
   airgap test k8s
-      Validate the Kubernetes air-gapped deployment.
+      Validate the Kubernetes deployment.
 
 ENVIRONMENT (.env):
   See .env.example for all configurable variables.
@@ -144,15 +143,15 @@ cmd_online() {
     shift || true
 
     case "${action}" in
-        audit)          online_audit ;;
-        up)             online_up "$@" ;;
-        sync)           online_sync "$@" ;;
-        mirror)         online_mirror ;;
-        apps)           online_apps "$@" ;;
-        export)         online_export "$@" ;;
-        export-db)      online_export_db ;;
-        configure-nextcloud) online_configure_nextcloud "$@" ;;
-        test)           online_test ;;
+        audit)             online_audit ;;
+        up)                online_up ;;
+        setup-nextcloud)   online_setup_nextcloud ;;
+        sync)              online_sync "$@" ;;
+        mirror)            online_mirror ;;
+        apps)              online_apps "$@" ;;
+        export)            online_export "$@" ;;
+        export-db)         online_export_db ;;
+        test)              online_test ;;
         *)
             echo "Unknown online action: '${action}'"
             usage
@@ -199,26 +198,18 @@ online_audit() {
 }
 
 online_up() {
-    local target="${1:-}"
     separator
-    info "Starting App Store staging stack"
+    info "Starting full stack (App Store + Nextcloud)"
     separator
 
     require_cmd docker
 
-    if [ "${target}" = "managed-nextcloud" ]; then
-        info "Including managed test Nextcloud"
-        LOAD_FIXTURES=true IMPORT_TRANSLATIONS=true \
-            docker compose -f "${PROJECT_DIR}/docker-compose.yml" up -d
-    else
-        LOAD_FIXTURES=true IMPORT_TRANSLATIONS=true \
-            docker compose -f "${PROJECT_DIR}/docker-compose.yml" up -d \
-            postgres appstore nginx fileserver
-    fi
+    LOAD_FIXTURES=true IMPORT_TRANSLATIONS=true \
+        docker compose -f "${PROJECT_DIR}/docker-compose.yml" up -d
 
     echo ""
     info "Waiting for App Store to be healthy..."
-    RETRIES=30
+    RETRIES=40
     until docker compose -f "${PROJECT_DIR}/docker-compose.yml" \
             exec -T appstore python -c \
             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/')" \
@@ -230,13 +221,71 @@ online_up() {
     echo ""
 
     separator
-    info "Staging stack is up"
+    info "Stack is up"
     echo ""
-    echo "  App Store : https://localhost"
-    echo "  Admin     : https://localhost/admin/"
-    echo "  File Srv  : http://localhost:8080/apps/"
+    echo "  App Store  : https://localhost"
+    echo "  Admin      : https://localhost/admin/"
+    echo "  File Srv   : http://localhost:8080/apps/"
+    echo "  Nextcloud  : http://localhost:8081  (installing — wait ~60s on first boot)"
     echo ""
-    info "Next: sync app metadata with: $0 online sync"
+    info "Next step: wait for Nextcloud to finish installing, then run:"
+    echo "  $0 online setup-nextcloud"
+}
+
+online_setup_nextcloud() {
+    separator
+    info "Connecting Nextcloud to the local App Store"
+    separator
+
+    NC_CONTAINER="${NEXTCLOUD_CONTAINER_NAME:-nextcloud}"
+
+    # Wait for Nextcloud to finish its first-boot install
+    info "Waiting for Nextcloud to be ready (first boot may take ~60s)..."
+    RETRIES=40
+    until docker exec "${NC_CONTAINER}" \
+            php -r "exit(file_get_contents('http://localhost/status.php') === false ? 1 : 0);" \
+            &>/dev/null || [ "${RETRIES}" -eq 0 ]; do
+        printf "."
+        sleep 5
+        RETRIES=$((RETRIES - 1))
+    done
+    echo ""
+
+    if [ "${RETRIES}" -eq 0 ]; then
+        warn "Nextcloud did not become ready in time."
+        warn "Check logs: docker logs ${NC_CONTAINER}"
+        warn "Then retry: $0 online setup-nextcloud"
+        exit 1
+    fi
+
+    # Install CA cert inside the NC container so it can verify the App Store's TLS cert
+    CA_CERT="${PROJECT_DIR}/k8s/certs/root-ca.crt"
+    if [ -f "${CA_CERT}" ]; then
+        info "Installing App Store CA certificate inside Nextcloud..."
+        docker cp "${CA_CERT}" \
+            "${NC_CONTAINER}:/usr/local/share/ca-certificates/appstore-root-ca.crt"
+        docker exec "${NC_CONTAINER}" update-ca-certificates 2>/dev/null || \
+            warn "update-ca-certificates failed — NC may not trust the App Store cert"
+        ok() { echo "[OK]    $*"; }
+        ok "CA certificate installed."
+    else
+        warn "CA cert not found at ${CA_CERT}"
+        warn "Run 'bash k8s/generate-certs.sh' first, then re-run this command."
+        exit 1
+    fi
+
+    # Delegate to the compose configure script (idempotent, backs up, rolls back on failure)
+    NEXTCLOUD_CONTAINER_NAME="${NC_CONTAINER}" \
+        bash "${AIRGAP_DIR}/scripts/configure-nextcloud-compose.sh" --no-ca
+
+    separator
+    info "Nextcloud is connected to the local App Store."
+    echo ""
+    echo "  Nextcloud   : http://localhost:8081"
+    echo "  App Store   : https://localhost"
+    echo ""
+    info "Next: sync app metadata"
+    echo "  $0 online sync"
 }
 
 online_sync() {
@@ -321,28 +370,6 @@ online_export_db() {
     bash "${SCRIPT_DIR}/db/export-db.sh"
 }
 
-online_configure_nextcloud() {
-    local target="${1:-}"
-    separator
-    info "Configure Nextcloud → local App Store (target: ${target})"
-    separator
-
-    case "${target}" in
-        managed-nextcloud|external-compose)
-            bash "${AIRGAP_DIR}/scripts/configure-nextcloud-compose.sh"
-            ;;
-        external-k8s)
-            bash "${AIRGAP_DIR}/scripts/configure-nextcloud-k8s.sh"
-            ;;
-        external-ssh)
-            bash "${AIRGAP_DIR}/scripts/configure-nextcloud-ssh.sh"
-            ;;
-        *)
-            error "Unknown target '${target}'. Choose: managed-nextcloud | external-compose | external-k8s | external-ssh"
-            ;;
-    esac
-}
-
 online_test() {
     separator
     info "Validating staging deployment"
@@ -399,11 +426,6 @@ cmd_package() {
 }
 
 package_build() {
-    local include_nextcloud=false
-    for arg in "$@"; do
-        [ "${arg}" = "--include-managed-nextcloud" ] && include_nextcloud=true
-    done
-
     separator
     info "Building air-gapped deployment package"
     separator
@@ -424,9 +446,8 @@ package_build() {
         -f "${PROJECT_DIR}/Dockerfile" \
         "${PROJECT_DIR}"
 
-    # ── 2. Save images ────────────────────────────────────────────────────────
-    local images=("nextcloudappstore:latest" "postgres:15-alpine" "nginx:alpine")
-    "${include_nextcloud}" && images+=("nextcloud:stable-apache")
+    # ── 2. Save images (Nextcloud always included — required for air-gapped NC) ─
+    local images=("nextcloudappstore:latest" "postgres:15-alpine" "nginx:alpine" "nextcloud:stable-apache")
 
     for img in "${images[@]}"; do
         local safe_name
@@ -541,23 +562,25 @@ airgap_deploy() {
 }
 
 airgap_configure_nextcloud() {
-    local target="${1:-}"
+    # Default: configure the Nextcloud container deployed by the airgapped compose stack.
+    # Override with NEXTCLOUD_RUNTIME=k8s or NEXTCLOUD_RUNTIME=ssh for other deployments.
+    local runtime="${NEXTCLOUD_RUNTIME:-compose}"
     separator
-    info "Configure Nextcloud → local App Store (air-gapped, target: ${target})"
+    info "Connecting Nextcloud to the local App Store (runtime: ${runtime})"
     separator
 
-    case "${target}" in
-        managed-nextcloud|external-compose)
+    case "${runtime}" in
+        compose)
             bash "${AIRGAP_DIR}/scripts/configure-nextcloud-compose.sh"
             ;;
-        external-k8s)
+        k8s)
             bash "${AIRGAP_DIR}/scripts/configure-nextcloud-k8s.sh"
             ;;
-        external-ssh)
+        ssh)
             bash "${AIRGAP_DIR}/scripts/configure-nextcloud-ssh.sh"
             ;;
         *)
-            error "Unknown target '${target}'. Choose: external-compose | external-k8s | external-ssh | managed-nextcloud"
+            error "Unknown NEXTCLOUD_RUNTIME '${runtime}'. Set to: compose | k8s | ssh"
             ;;
     esac
 }

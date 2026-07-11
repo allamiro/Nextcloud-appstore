@@ -1,403 +1,384 @@
 # Operator Runbook — Nextcloud App Store Deployment Toolkit
 
-This document covers every operational task for deploying and maintaining the Nextcloud App Store in both internet-connected (staging/online) and fully air-gapped environments.
+This runbook covers the complete lifecycle of the Nextcloud App Store deployment toolkit, starting from zero on both sides — no Nextcloud, no App Store installed anywhere. Follow it in order.
+
+---
+
+## Overview
+
+This toolkit deploys two things as a single integrated stack:
+
+1. **A private Nextcloud App Store** — a full replica of `apps.nextcloud.com` that your Nextcloud queries instead of the public internet
+2. **Nextcloud itself** — deployed alongside the App Store and configured to use it automatically
+
+There are two environments:
+
+| Environment | Has internet | Purpose |
+|---|---|---|
+| **Commercial** | Yes | Sync app catalog, mirror packages, build export bundle |
+| **Air-gapped** | No | Production deployment from pre-built bundle |
+
+The workflow is always: **Commercial → bundle → transfer → Air-gapped**.
 
 ---
 
 ## Table of Contents
 
-1. [Overview and Architecture](#1-overview-and-architecture)
-2. [Prerequisites](#2-prerequisites)
-3. [Repository Layout](#3-repository-layout)
-4. [First-Time Setup](#4-first-time-setup)
-5. [Environment Variables Reference](#5-environment-variables-reference)
-6. [Online Workflow: Start the Staging Stack](#6-online-workflow-start-the-staging-stack)
-7. [Online Workflow: Sync App Metadata](#7-online-workflow-sync-app-metadata)
-8. [App Allowlist Management](#8-app-allowlist-management)
-9. [Compatibility Checking](#9-compatibility-checking)
-10. [Generating a Compatibility Report](#10-generating-a-compatibility-report)
-11. [Downloading Approved App Packages](#11-downloading-approved-app-packages)
-12. [Mirroring All App Packages](#12-mirroring-all-app-packages)
-13. [Exporting the Database](#13-exporting-the-database)
-14. [Building the Export Bundle](#14-building-the-export-bundle)
-15. [Building the Package Tarball](#15-building-the-package-tarball)
-16. [Transferring to an Air-Gapped Host](#16-transferring-to-an-air-gapped-host)
-17. [Loading Docker Images (Air-Gapped)](#17-loading-docker-images-air-gapped)
-18. [Deploying with Docker Compose (Air-Gapped)](#18-deploying-with-docker-compose-air-gapped)
-19. [Deploying on Kubernetes (Air-Gapped)](#19-deploying-on-kubernetes-air-gapped)
-20. [TLS Certificate Management](#20-tls-certificate-management)
-21. [Configuring Nextcloud — Docker Compose Target](#21-configuring-nextcloud--docker-compose-target)
-22. [Configuring Nextcloud — Kubernetes Target](#22-configuring-nextcloud--kubernetes-target)
-23. [Configuring Nextcloud — SSH / Bare-Metal Target](#23-configuring-nextcloud--ssh--bare-metal-target)
-24. [Validating the Air-Gapped Deployment](#24-validating-the-air-gapped-deployment)
-25. [Updating the App Catalog (Re-sync)](#25-updating-the-app-catalog-re-sync)
-26. [Rotating the Database Password](#26-rotating-the-database-password)
-27. [Backing Up and Restoring the Database](#27-backing-up-and-restoring-the-database)
-28. [Scaling and High Availability Notes](#28-scaling-and-high-availability-notes)
-29. [Troubleshooting: App Store Not Reachable](#29-troubleshooting-app-store-not-reachable)
-30. [Troubleshooting: Nextcloud Shows Public App Store](#30-troubleshooting-nextcloud-shows-public-app-store)
-31. [Troubleshooting: TLS / Certificate Errors](#31-troubleshooting-tls--certificate-errors)
-32. [Troubleshooting: Database Import Failures](#32-troubleshooting-database-import-failures)
-33. [Troubleshooting: App Package Download Failures](#33-troubleshooting-app-package-download-failures)
-34. [Security Considerations](#34-security-considerations)
-35. [Quick Reference — All appstorectl Commands](#35-quick-reference--all-appstorectl-commands)
+**Phase 1 — Commercial: Initial Setup**
+1. [Prerequisites](#1-prerequisites)
+2. [Repository Setup and Configuration](#2-repository-setup-and-configuration)
+3. [Generate TLS Certificates](#3-generate-tls-certificates)
+4. [Start the Full Stack](#4-start-the-full-stack)
+5. [Connect Nextcloud to the Local App Store](#5-connect-nextcloud-to-the-local-app-store)
+6. [Verify the Commercial Deployment](#6-verify-the-commercial-deployment)
+
+**Phase 2 — Commercial: Build the Export Bundle**
+7. [Sync App Metadata from Upstream](#7-sync-app-metadata-from-upstream)
+8. [Manage the App Allowlist](#8-manage-the-app-allowlist)
+9. [Check Compatibility with Your Nextcloud Version](#9-check-compatibility-with-your-nextcloud-version)
+10. [Download Approved App Packages](#10-download-approved-app-packages)
+11. [Generate the Compatibility Report](#11-generate-the-compatibility-report)
+12. [Export the Database](#12-export-the-database)
+13. [Build the Air-Gapped Export Bundle](#13-build-the-air-gapped-export-bundle)
+14. [Verify the Bundle](#14-verify-the-bundle)
+
+**Phase 3 — Transfer**
+15. [Transfer the Bundle to the Air-Gapped Host](#15-transfer-the-bundle-to-the-air-gapped-host)
+
+**Phase 4 — Air-Gapped: Deployment**
+16. [Air-Gapped Prerequisites](#16-air-gapped-prerequisites)
+17. [Configure the Air-Gapped Environment File](#17-configure-the-air-gapped-environment-file)
+18. [Load Docker Images](#18-load-docker-images)
+19. [Deploy the Full Stack (Docker Compose)](#19-deploy-the-full-stack-docker-compose)
+20. [Deploy the Full Stack (Kubernetes)](#20-deploy-the-full-stack-kubernetes)
+21. [Connect Nextcloud to the Local App Store](#21-connect-nextcloud-to-the-local-app-store)
+22. [Validate the Air-Gapped Deployment](#22-validate-the-air-gapped-deployment)
+23. [Access Nextcloud and Confirm Apps Load](#23-access-nextcloud-and-confirm-apps-load)
+
+**Phase 5 — Update Cycle**
+24. [Update the App Catalog on the Commercial Side](#24-update-the-app-catalog-on-the-commercial-side)
+25. [Build and Transfer an Updated Bundle](#25-build-and-transfer-an-updated-bundle)
+26. [Apply the Update in the Air-Gapped Environment](#26-apply-the-update-in-the-air-gapped-environment)
+
+**Operations Reference**
+27. [TLS Certificate Management](#27-tls-certificate-management)
+28. [Rotating Passwords](#28-rotating-passwords)
+29. [Backing Up and Restoring the Database](#29-backing-up-and-restoring-the-database)
+30. [Troubleshooting: Stack Won't Start](#30-troubleshooting-stack-wont-start)
+31. [Troubleshooting: Nextcloud Shows Public App Store](#31-troubleshooting-nextcloud-shows-public-app-store)
+32. [Troubleshooting: TLS Certificate Errors](#32-troubleshooting-tls-certificate-errors)
+33. [Troubleshooting: App Packages Not Downloading](#33-troubleshooting-app-packages-not-downloading)
+34. [Troubleshooting: Database Import Failures](#34-troubleshooting-database-import-failures)
+35. [Quick Reference — All Commands](#35-quick-reference--all-commands)
 
 ---
 
-## 1. Overview and Architecture
+# Phase 1 — Commercial: Initial Setup
 
-This toolkit wraps the upstream [Nextcloud App Store](https://github.com/nextcloud/appstore) Django application to provide:
+## 1. Prerequisites
 
-- A fully private App Store that a Nextcloud instance queries instead of `apps.nextcloud.com`
-- An offline-capable mirror of app packages served via a local HTTPS fileserver
-- Tooling to build, transfer, and deploy the entire stack into air-gapped environments
+The following tools must be installed on the **commercial (internet-connected) host**:
 
-### Services
-
-| Service | Purpose | Port (local/NodePort) |
+| Tool | Version | Check |
 |---|---|---|
-| `appstore` | Django/uWSGI App Store backend | 8000 (internal) |
-| `nginx` | TLS termination + reverse proxy | 30443 |
-| `postgres` | Database | 5432 (internal) |
-| `fileserver` | nginx serving mirrored `.tar.gz` archives | 30444 |
-
-### Communication path
-
-```
-Nextcloud ──HTTPS──► nginx:30443 ──► uWSGI:8000 (appstore)
-                                          │
-                                     PostgreSQL
-Nextcloud ──HTTPS──► nginx:30444 (fileserver) ──► /var/www/html/apps/*.tar.gz
-```
-
-The `appstoreurl` Nextcloud config key must point to `https://<appstore-host>/api/v1` (note: `/api/v1` suffix, not just the root).
-
----
-
-## 2. Prerequisites
-
-### Online (staging) host
-
-| Tool | Minimum version | Notes |
-|---|---|---|
-| Docker | 24+ | Compose plugin required (`docker compose`) |
-| curl | any | For health checks |
-| Python 3 | 3.9+ | For report generation scripts |
-| sha256sum / shasum | any | For checksum generation |
-
-### Air-gapped host
-
-| Tool | Minimum version |
-|---|---|
-| Docker | 24+ (Compose) **or** Kubernetes 1.26+ |
-| kubectl | 1.26+ (K8s deployments only) |
-
-### Nextcloud instance being configured
-
-- Running Nextcloud (any version ≥ 25)
-- `php occ` available as `www-data`
-- Network path from NC host to App Store host
-
----
-
-## 3. Repository Layout
-
-```
-Nextcloud-appstore/
-├── scripts/
-│   ├── appstorectl.sh          ← Main CLI entry point
-│   ├── export-bundle.sh        ← Full bundle builder
-│   ├── sync-apps.sh            ← Sync from upstream App Store
-│   ├── apps/
-│   │   ├── manage-allowlist.sh
-│   │   ├── check-compatibility.sh
-│   │   ├── generate-report.sh
-│   │   └── download-approved.sh
-│   ├── mirror-apps/
-│   │   ├── 01-extract-urls.sh
-│   │   ├── 02-download-apps.sh
-│   │   └── 03-update-db-urls.sh
-│   └── db/
-│       └── export-db.sh
-├── airgapped/
-│   ├── docker-compose/
-│   │   ├── docker-compose.airgapped.yml
-│   │   └── docker-compose.nextcloud-test.yml
-│   ├── k8s/                    ← Air-gapped Kubernetes manifests
-│   ├── scripts/
-│   │   ├── load-images.sh
-│   │   ├── deploy-compose-airgap.sh
-│   │   ├── deploy-k8s-airgap.sh
-│   │   ├── configure-nextcloud-compose.sh
-│   │   ├── configure-nextcloud-k8s.sh
-│   │   ├── configure-nextcloud-ssh.sh
-│   │   └── test-airgap.sh
-│   ├── images/                 ← Docker image tarballs (gitignored)
-│   └── exports/                ← DB dumps, app archives, manifests (gitignored)
-├── config/
-│   └── app-allowlist.txt       ← Approved app IDs for export
-├── k8s/                        ← Online/staging Kubernetes manifests
-├── exports/                    ← Exports from online workflow (gitignored)
-├── .env.example                ← Template — copy to .env
-└── RUN.md                      ← This file
-```
-
----
-
-## 4. First-Time Setup
+| Docker + Compose plugin | 24+ | `docker compose version` |
+| OpenSSL | any | `openssl version` |
+| curl | any | `curl --version` |
+| Python 3 | 3.9+ | `python3 --version` |
+| git | any | `git --version` |
 
 ```bash
-# 1. Clone the repository
+# Quick check — all should return a version, not "command not found"
+docker compose version
+openssl version
+curl --version
+python3 --version
+```
+
+---
+
+## 2. Repository Setup and Configuration
+
+```bash
+# Clone the repository
 git clone https://github.com/allamiro/Nextcloud-appstore.git
 cd Nextcloud-appstore
 
-# 2. Create your environment file
+# Create your environment file from the template
 cp .env.example .env
-$EDITOR .env   # Fill in passwords, domains, NC version
-
-# 3. Generate TLS certificates (self-signed CA chain)
-bash k8s/generate-certs.sh
-
-# 4. Review the allowlist
-cat config/app-allowlist.txt
-# Uncomment or add the app IDs you want to export
 ```
 
-The most critical `.env` values to set before first run:
+Open `.env` and fill in these values **before starting anything**:
 
-| Variable | What to set |
-|---|---|
-| `SECRET_KEY` | Generate with: `tr -dc 'a-zA-Z0-9_-' < /dev/urandom \| head -c 64` |
-| `DB_PASSWORD` | Strong random password |
-| `APPSTORE_DOMAIN` | Hostname the App Store will be reached on |
-| `FILE_SERVER_URL` | Base URL for mirrored app archives |
-| `NEXTCLOUD_VERSION` | Target NC version (e.g. `30.0.1`) |
+```bash
+# ==========================================================
+# Minimum required values — everything else has safe defaults
+# ==========================================================
 
----
+# Generate a unique secret key (never use the default in production):
+# tr -dc 'a-zA-Z0-9_-' < /dev/urandom | head -c 64; echo
+SECRET_KEY=<64-char random string — no $ characters>
 
-## 5. Environment Variables Reference
+# App Store database password
+DB_PASSWORD=<strong random password>
 
-### App Store identity
+# Nextcloud database password (separate from App Store)
+NEXTCLOUD_DB_PASSWORD=<strong random password>
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `APPSTORE_DOMAIN` | `appstore.local` | Hostname for the App Store |
-| `FILESERVER_DOMAIN` | `files.local` | Hostname for the fileserver |
-| `APPSTORE_API_URL` | `https://appstore.local/api/v1` | URL Nextcloud uses to query the store |
-| `FILE_SERVER_URL` | `https://files.local/apps` | Base URL for mirrored packages |
+# Nextcloud admin login
+NEXTCLOUD_ADMIN_USER=admin
+NEXTCLOUD_ADMIN_PASSWORD=<strong password>
 
-### Nextcloud target version
+# The hostname this App Store will be reached on
+APPSTORE_DOMAIN=appstore.yourdomain.local
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `NEXTCLOUD_VERSION` | *(required)* | Full version, e.g. `30.0.1` |
-| `NEXTCLOUD_MAJOR_VERSION` | *(required)* | Major version number, e.g. `30` |
+# The hostname where mirrored app packages will be served
+FILESERVER_DOMAIN=files.yourdomain.local
 
-### Nextcloud runtime (for configure scripts)
+# URL Nextcloud uses to query the local App Store (must end with /api/v1)
+APPSTORE_API_URL=https://appstore.yourdomain.local/api/v1
 
-| Variable | Values | Purpose |
-|---|---|---|
-| `NEXTCLOUD_RUNTIME` | `compose` \| `k8s` \| `ssh` \| `manual` | How NC is deployed |
-| `NEXTCLOUD_CONTAINER_NAME` | `nextcloud` | Docker Compose container name |
-| `NEXTCLOUD_K8S_NAMESPACE` | `nextcloud` | Kubernetes namespace for NC |
-| `NEXTCLOUD_K8S_POD_SELECTOR` | `app=nextcloud` | Pod label selector |
-| `NEXTCLOUD_SSH_HOST` | *(required for ssh)* | Remote hostname |
-| `NEXTCLOUD_SSH_USER` | *(required for ssh)* | SSH username |
-| `NEXTCLOUD_PATH` | `/var/www/html` | Path to NC on remote host |
+# Base URL for downloading mirrored app packages
+FILE_SERVER_URL=https://files.yourdomain.local/apps
 
-### Packaging
+# The exact Nextcloud version you are deploying (for compatibility filtering)
+NEXTCLOUD_VERSION=30.0.1
+NEXTCLOUD_MAJOR_VERSION=30
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `AIRGAP_IMAGE_DIR` | `airgapped/images` | Where to save Docker image tarballs |
-| `AIRGAP_EXPORT_DIR` | `airgapped/exports` | Where to save DB dumps and archives |
-| `INCLUDE_MANAGED_NEXTCLOUD_IMAGES` | `false` | Include `nextcloud:stable-apache` in package |
+# GitHub API token — required for syncing Nextcloud releases
+GITHUB_API_TOKEN=ghp_your_token_here
+```
 
 ---
 
-## 6. Online Workflow: Start the Staging Stack
+## 3. Generate TLS Certificates
 
-Run this on the internet-connected host where you build the deployment bundle.
+The App Store uses a self-signed CA chain so that Nextcloud can verify its identity. Generate it once:
+
+```bash
+bash k8s/generate-certs.sh
+```
+
+This creates:
+- `k8s/certs/root-ca.crt` — Root CA certificate (distribute to Nextcloud hosts)
+- `k8s/certs/root-ca.key` — Root CA private key (never leave the commercial host)
+- `k8s/certs/appstore.crt` / `appstore.key` — Server certificate for nginx
+
+**Keep `k8s/certs/root-ca.key` on the commercial host only.** Copy only `root-ca.crt` to other systems.
+
+---
+
+## 4. Start the Full Stack
 
 ```bash
 ./scripts/appstorectl.sh online up
 ```
 
-This starts: `postgres`, `appstore`, `nginx`, `fileserver`.
+This starts all services:
+- `postgres` — App Store database
+- `postgres-nc` — Nextcloud database
+- `appstore` — Django/uWSGI App Store backend
+- `nginx` — TLS reverse proxy for the App Store
+- `fileserver` — HTTPS server for mirrored app archives
+- `nextcloud` — Nextcloud (auto-installs on first boot)
 
-Wait for the health check to pass (shown in output). The stack is ready when you see:
+Expected output:
 
 ```
-[INFO]  Staging stack is up
-  App Store : https://localhost
-  Admin     : https://localhost/admin/
+[INFO]  Stack is up
+
+  App Store  : https://localhost
+  Admin      : https://localhost/admin/
+  File Srv   : http://localhost:8080/apps/
+  Nextcloud  : http://localhost:8081  (installing — wait ~60s on first boot)
+
+[INFO]  Next step: wait for Nextcloud to finish installing, then run:
+  ./scripts/appstorectl.sh online setup-nextcloud
 ```
 
-To also start a managed test Nextcloud:
+Check that all services are running:
 
 ```bash
-./scripts/appstorectl.sh online up managed-nextcloud
+docker compose ps
 ```
 
-To check the stack status at any time:
+All six services should show `Up` or `healthy`.
+
+**Wait for Nextcloud to finish its first-boot installation** before proceeding. You can watch the logs:
 
 ```bash
-./scripts/appstorectl.sh online audit
+docker logs -f nextcloud
+# Ready when you see: "Nextcloud was successfully installed"
 ```
 
 ---
 
-## 7. Online Workflow: Sync App Metadata
+## 5. Connect Nextcloud to the Local App Store
 
-Pulls all app metadata from the official Nextcloud App Store API and stores it in the local database.
+Once Nextcloud finishes installing:
+
+```bash
+./scripts/appstorectl.sh online setup-nextcloud
+```
+
+This command:
+1. Waits for Nextcloud to be fully ready
+2. Copies the App Store CA certificate into the Nextcloud container and runs `update-ca-certificates`
+3. Sets `appstoreenabled = true` via `php occ`
+4. Sets `appstoreurl = https://appstore.local/api/v1` (or your configured domain)
+5. Tests that Nextcloud can actually reach and query the App Store API
+6. Rolls back the configuration if the connectivity test fails
+
+If the test passes, you will see:
+
+```
+[OK]    Connectivity test passed — Nextcloud can reach the App Store.
+[OK]    Configuration complete.
+```
+
+---
+
+## 6. Verify the Commercial Deployment
+
+```bash
+./scripts/appstorectl.sh online test
+```
+
+All checks should pass. Then open Nextcloud in a browser:
+
+```
+http://localhost:8081
+```
+
+Log in with `NEXTCLOUD_ADMIN_USER` / `NEXTCLOUD_ADMIN_PASSWORD` from `.env`, then navigate to **Apps**. The app list should load from your local App Store (it will be mostly empty until you sync — that's expected at this point).
+
+---
+
+# Phase 2 — Commercial: Build the Export Bundle
+
+## 7. Sync App Metadata from Upstream
+
+Pull all app metadata from the official Nextcloud App Store. This requires the `GITHUB_API_TOKEN` set in `.env`.
 
 ```bash
 ./scripts/appstorectl.sh online sync
 ```
 
-To limit how many apps are synced (useful for testing):
+This populates your local database with the full catalog of Nextcloud apps. The sync may take several minutes. When complete, refreshing the Apps page in Nextcloud should show the full catalog.
+
+To limit the sync to a smaller set for testing:
 
 ```bash
 ./scripts/appstorectl.sh online sync --limit 50
 ```
 
-The sync populates the `nextcloudappstore_core_app` and `nextcloudappstore_core_apprelease` tables. After syncing, the local App Store API at `https://localhost/api/v1/` returns the full app catalog.
-
 ---
 
-## 8. App Allowlist Management
+## 8. Manage the App Allowlist
 
-The allowlist at `config/app-allowlist.txt` controls which apps are included in compatibility checks and export bundles. If the file is empty (no uncommented lines), all synced apps are included.
+The allowlist at `config/app-allowlist.txt` controls which apps are included in the air-gapped bundle. If the file has no active (non-commented) lines, all synced apps are included.
+
+**Add only the apps your organization needs** — this keeps the bundle small and avoids downloading thousands of packages you won't use.
 
 ```bash
-# List all currently approved apps
+# See what's in the allowlist
 ./scripts/appstorectl.sh online apps allowlist list
 
-# Add an app
+# Add apps you need
 ./scripts/appstorectl.sh online apps allowlist add calendar
 ./scripts/appstorectl.sh online apps allowlist add contacts
-./scripts/appstorectl.sh online apps allowlist add deck
+./scripts/appstorectl.sh online apps allowlist add user_ldap
+./scripts/appstorectl.sh online apps allowlist add twofactor_totp
 
-# Remove an app
-./scripts/appstorectl.sh online apps allowlist remove deck
-
-# Show approval status for all synced apps
+# See which synced apps are approved vs. not
 ./scripts/appstorectl.sh online apps allowlist status
 ```
 
-The `allowlist status` command queries the database and shows which synced apps are approved vs. not. It requires the App Store to be running.
-
-App IDs are the technical identifiers used in the Nextcloud App Store (e.g. `calendar`, `contacts`, `user_ldap`). To find the correct ID: browse `https://localhost/api/v1/` or check `https://apps.nextcloud.com`.
+App IDs are the technical identifiers (e.g. `calendar`, `contacts`, `deck`). To find them, browse `https://apps.nextcloud.com` or query the local App Store at `https://localhost/api/v1/`.
 
 ---
 
-## 9. Compatibility Checking
+## 9. Check Compatibility with Your Nextcloud Version
 
-Check which approved apps have a release compatible with your target Nextcloud version.
+Verify which approved apps have a release compatible with `NEXTCLOUD_VERSION` from your `.env`:
 
 ```bash
-# Uses NEXTCLOUD_VERSION from .env
 ./scripts/appstorectl.sh online apps check-compat
+```
 
-# Override version on the command line
+Or specify the version explicitly:
+
+```bash
 ./scripts/appstorectl.sh online apps check-compat --nc-version 30.0.1
 ```
 
-Output example:
+Sample output:
 
 ```
-[INFO]  Checking app compatibility against Nextcloud 30.0.1
-
-  Total approved apps : 25
-  Compatible          : 23
-  Not compatible      : 2
+  Total approved apps : 12
+  Compatible          : 11
+  Not compatible      : 1
 
   COMPATIBLE apps:
-    calendar                             v4.5.3       >=25.0.0,<31.0.0
-    contacts                             v5.5.3       >=25.0.0,<31.0.0
+    calendar          v4.5.3    >=25.0.0,<31.0.0
+    contacts          v5.5.3    >=25.0.0,<31.0.0
+    user_ldap         v1.15.0   >=25.0.0,<31.0.0
     ...
 
   NOT COMPATIBLE apps:
-    legacy_app                           no release for NC 30.0.1
+    legacy_app        no release for NC 30.0.1
 ```
 
-Compatibility uses the `platform_version_spec` field from each release (semantic version range). Only the latest compatible release per app is shown.
-
-The results are saved to `exports/compatibility_<version>.json` for use by the report generator.
+Apps with no compatible release will not be downloaded or included in the bundle. Remove them from the allowlist or choose a different NC version.
 
 ---
 
-## 10. Generating a Compatibility Report
+## 10. Download Approved App Packages
 
-Produces `exports/COMPATIBILITY_REPORT.csv` and `exports/COMPATIBILITY_REPORT.json` with full detail per app: version, platform spec, download URL, local archive path, checksum, approval status, and export status.
-
-```bash
-./scripts/appstorectl.sh online apps report --nc-version 30.0.1
-```
-
-CSV columns:
-
-| Column | Description |
-|---|---|
-| `app_id` | Technical app identifier |
-| `app_name` | Human-readable name |
-| `release_version` | Latest compatible version |
-| `platform_spec` | NC version range (e.g. `>=25.0.0,<31.0.0`) |
-| `nc_target` | Nextcloud version being targeted |
-| `is_compatible` | `True` / `False` |
-| `download_url` | URL in the database (local or original) |
-| `local_path` | Path to the local `.tar.gz` archive |
-| `checksum_sha256` | SHA-256 of the local archive |
-| `is_approved` | Always `True` for allowlisted apps |
-| `export_status` | `downloaded` / `missing_archive` / `no_compatible_release` |
-
-Apps with `export_status = missing_archive` need `download-approved.sh` to run.
-
----
-
-## 11. Downloading Approved App Packages
-
-Downloads `.tar.gz` packages only for allowlisted, compatible apps. Generates checksums. Skips already-present files unless `--force` is passed.
+Download the `.tar.gz` packages for all approved, compatible apps:
 
 ```bash
 ./scripts/appstorectl.sh online apps mirror-approved --nc-version 30.0.1
+```
 
-# Re-download everything even if already present
+This:
+- Downloads only allowlisted + compatible packages (skips existing files)
+- Generates `exports/app-archives/CHECKSUMS.sha256`
+- Outputs download progress per app
+
+To re-download everything:
+
+```bash
 ./scripts/appstorectl.sh online apps mirror-approved --nc-version 30.0.1 --force
 ```
 
-Archives land in `exports/app-archives/files/` with a matching `CHECKSUMS.sha256`.
-
-This is the preferred alternative to the full `online mirror` when you only want approved apps (smaller bundle, no URLs from non-approved apps rewritten).
-
----
-
-## 12. Mirroring All App Packages
-
-Mirrors every app in the database regardless of the allowlist. Rewrites download URLs in the database to point to the local fileserver.
+After downloading, the database URLs must be rewritten so they point to your local fileserver instead of `apps.nextcloud.com`. Run the full mirror command to do this:
 
 ```bash
 ./scripts/appstorectl.sh online mirror
 ```
 
-This runs three steps in sequence:
-1. Extract all download URLs from the database
-2. Download all `.tar.gz` archives to `exports/app-archives/files/`
-3. Rewrite database URLs to `${FILE_SERVER_URL}/<filename>`
-
-After mirroring, export the database to capture the rewritten URLs:
-
-```bash
-./scripts/appstorectl.sh online export-db
-```
-
-**Note:** `online mirror` rewrites ALL app URLs, not just approved ones. If you only want approved apps, use `online apps mirror-approved` instead and re-export the DB after.
+This rewrites every `download` URL in the database for apps that have a local copy, then you need to re-export the database.
 
 ---
 
-## 13. Exporting the Database
+## 11. Generate the Compatibility Report
 
-Dumps the PostgreSQL database to a gzipped SQL file.
+```bash
+./scripts/appstorectl.sh online apps report --nc-version 30.0.1
+```
+
+Produces:
+- `exports/COMPATIBILITY_REPORT.csv` — spreadsheet format
+- `exports/COMPATIBILITY_REPORT.json` — machine-readable format
+
+The report shows per-app: version, platform spec, local archive path, checksum, and `export_status` (`downloaded` / `missing_archive` / `no_compatible_release`). All apps should show `downloaded` before proceeding to the bundle build.
+
+---
+
+## 12. Export the Database
+
+Export the App Store database **after** downloading and mirroring (so the dump contains rewritten local URLs):
 
 ```bash
 ./scripts/appstorectl.sh online export-db
@@ -405,32 +386,33 @@ Dumps the PostgreSQL database to a gzipped SQL file.
 
 Output: `exports/appstore_db_<timestamp>.sql.gz`
 
-Always export the database **after** mirroring so the dump contains the rewritten local URLs. The air-gapped deployment imports this dump on first boot.
-
-To check existing exports:
-
-```bash
-ls -lh exports/*.sql.gz
-```
+This dump is imported on first boot in the air-gapped environment to give the deployed App Store its full catalog with correct local URLs.
 
 ---
 
-## 14. Building the Export Bundle
+## 13. Build the Air-Gapped Export Bundle
 
-The export bundle is the complete, validated artifact for air-gapped deployment. It runs all steps in order and produces a tarball.
+This is the single command that packages everything for transfer:
 
 ```bash
 ./scripts/appstorectl.sh online export --nc-version 30.0.1
 ```
 
-This does:
-1. Generates `COMPATIBILITY_REPORT.csv` / `.json`
-2. Downloads any missing approved app packages
-3. Exports the database
-4. Saves Docker images as `.tar.gz`
-5. Writes `VERSION.txt` and `MANIFEST.json`
-6. Computes `CHECKSUMS.sha256`
-7. Creates `nextcloud-appstore-airgap-<timestamp>.tar.gz`
+What it produces:
+
+| File/Directory | Contents |
+|---|---|
+| `nextcloud-appstore-airgap-<ts>.tar.gz` | Everything below, in one tarball |
+| `airgapped/images/*.tar.gz` | Docker images: appstore, postgres, nginx, **nextcloud** |
+| `airgapped/images/*.sha256` | SHA-256 checksum per image |
+| `airgapped/exports/appstore_db_<ts>.sql.gz` | App Store database dump |
+| `airgapped/exports/app-archives/files/*.tar.gz` | App packages |
+| `airgapped/exports/app-archives/CHECKSUMS.sha256` | Package checksums |
+| `airgapped/exports/VERSION.txt` | Human-readable export manifest |
+| `airgapped/exports/MANIFEST.json` | Machine-readable manifest |
+| `airgapped/exports/COMPATIBILITY_REPORT.csv` | Per-app compatibility |
+| `airgapped/exports/CHECKSUMS.sha256` | Checksums of all export files |
+| `airgapped/exports/ALLOWLIST.txt` | Copy of the allowlist |
 
 To skip saving images (if you're transferring them separately):
 
@@ -438,168 +420,406 @@ To skip saving images (if you're transferring them separately):
 ./scripts/appstorectl.sh online export --nc-version 30.0.1 --skip-images
 ```
 
-The `VERSION.txt` inside the bundle contains:
+---
+
+## 14. Verify the Bundle
+
+Confirm the bundle is complete and checksums match:
+
+```bash
+# Check the manifest
+cat airgapped/exports/VERSION.txt
+
+# Verify file checksums
+cd airgapped/exports
+sha256sum -c CHECKSUMS.sha256
+cd -
+
+# List what's in the tarball
+ls -lh nextcloud-appstore-airgap-*.tar.gz
+```
+
+The `VERSION.txt` should show:
 
 ```
-EXPORT_TIMESTAMP=20241201_120000
+EXPORT_TIMESTAMP=...
 APPSTORE_VERSION=master
 NEXTCLOUD_VERSION=30.0.1
-TOTAL_APPROVED_APPS=25
-COMPATIBLE_APPS=23
-EXPORTED_PACKAGES=23
+TOTAL_APPROVED_APPS=12
+COMPATIBLE_APPS=11
+EXPORTED_PACKAGES=11
 ```
 
 ---
 
-## 15. Building the Package Tarball
+# Phase 3 — Transfer
 
-For a quick package of the deployment scripts and images only (without the full compatibility pipeline):
+## 15. Transfer the Bundle to the Air-Gapped Host
+
+### Option A: Single tarball via scp
 
 ```bash
-./scripts/appstorectl.sh package build
-
-# Include the managed test Nextcloud image
-./scripts/appstorectl.sh package build --include-managed-nextcloud
+scp nextcloud-appstore-airgap-<timestamp>.tar.gz \
+    user@airgap-host:/opt/deployments/
 ```
 
-This builds the `nextcloudappstore:latest` Docker image, saves all required images, copies the DB dump and app archives, and creates a tarball.
-
-Use `online export` instead when you want the full manifest, report, and checksum coverage.
-
----
-
-## 16. Transferring to an Air-Gapped Host
-
-### Option A: Single tarball
+On the air-gapped host:
 
 ```bash
-# On the online host
-scp nextcloud-appstore-airgap-<timestamp>.tar.gz user@airgap-host:/opt/
-
-# On the air-gapped host
-cd /opt
+cd /opt/deployments
 tar -xzf nextcloud-appstore-airgap-<timestamp>.tar.gz
-cd Nextcloud-appstore
-cp .env.example .env
-$EDITOR .env   # Set passwords and domains for this environment
 ```
 
-### Option B: rsync the directory
+### Option B: rsync the directory (if SSH is available between environments)
 
 ```bash
-rsync -av --exclude='.git' \
+rsync -av --progress \
+    --exclude='.git' \
+    --exclude='exports/app-archives/files/' \
     Nextcloud-appstore/ \
     user@airgap-host:/opt/Nextcloud-appstore/
+
+# Then sync app archives separately (they can be large)
+rsync -av exports/app-archives/files/ \
+    user@airgap-host:/opt/Nextcloud-appstore/airgapped/exports/app-archives/files/
 ```
 
 ### Option C: Physical media
 
-Copy the tarball to a USB drive or other physical media. Verify checksums after transfer:
+Copy the tarball to encrypted USB or other physical media. After copying:
 
 ```bash
-sha256sum -c airgapped/exports/CHECKSUMS.sha256
+# Verify integrity on the air-gapped host
+sha256sum nextcloud-appstore-airgap-<timestamp>.tar.gz
+# Compare against the sha256 you recorded on the commercial host
 ```
 
 ---
 
-## 17. Loading Docker Images (Air-Gapped)
+# Phase 4 — Air-Gapped: Deployment
 
-On the air-gapped host, load the saved images into Docker. This verifies SHA-256 checksums automatically if `.sha256` sidecar files are present.
+## 16. Air-Gapped Prerequisites
+
+The following must be installed on the **air-gapped host** before deployment:
+
+| Tool | Version |
+|---|---|
+| Docker + Compose plugin | 24+ |
+
+No internet access is required or used after this point. All images come from the bundle.
+
+```bash
+# Verify Docker is available
+docker compose version
+```
+
+---
+
+## 17. Configure the Air-Gapped Environment File
+
+After extracting the bundle:
+
+```bash
+cd /opt/Nextcloud-appstore   # or wherever you extracted to
+
+cp .env.example .env
+$EDITOR .env
+```
+
+**Critical values to set for the air-gapped environment:**
+
+```bash
+# ==========================================================
+# Must match what was used on the commercial side
+# OR set to values appropriate for this host
+# ==========================================================
+
+# Passwords — should match what's in the bundle's DB dump
+DB_PASSWORD=<same as commercial>
+NEXTCLOUD_DB_PASSWORD=<same as commercial>
+
+# NC admin credentials
+NEXTCLOUD_ADMIN_USER=admin
+NEXTCLOUD_ADMIN_PASSWORD=<same as commercial>
+
+# The hostname this App Store will be reached on IN THIS ENVIRONMENT
+APPSTORE_DOMAIN=appstore.internal
+FILESERVER_DOMAIN=files.internal
+
+# The URL Nextcloud will use to reach the App Store
+APPSTORE_API_URL=https://appstore.internal/api/v1
+
+# The URL for downloading app packages
+FILE_SERVER_URL=https://files.internal/apps
+
+# Django secret key — can be the same as commercial
+SECRET_KEY=<same 64-char string from commercial>
+
+# Allowed hosts for Django — must include the airgap hostname
+ALLOWED_HOSTS=localhost,127.0.0.1,appstore.internal
+```
+
+> **Note on domains:** If you are using different hostnames in the air-gapped environment than on the commercial side (e.g. `appstore.internal` instead of `appstore.yourdomain.local`), you must regenerate the TLS certificate for the new hostname before loading images:
+>
+> ```bash
+> APPSTORE_DOMAIN=appstore.internal bash k8s/generate-certs.sh
+> ```
+
+---
+
+## 18. Load Docker Images
 
 ```bash
 ./scripts/appstorectl.sh airgap load-images
 ```
 
-Verify images are available:
+This loads all `.tar.gz` images from `airgapped/images/` into Docker and verifies their SHA-256 checksums. After loading, verify:
 
 ```bash
-docker images | grep -E "nextcloudappstore|postgres|nginx"
+docker images
 ```
 
-Expected output:
+You should see all four images:
 
 ```
-nextcloudappstore   latest    <id>   ...
-postgres            15-alpine <id>   ...
-nginx               alpine    <id>   ...
+nextcloudappstore   latest          <id>   ...
+nextcloud           stable-apache   <id>   ...
+postgres            15-alpine       <id>   ...
+nginx               alpine          <id>   ...
 ```
 
 ---
 
-## 18. Deploying with Docker Compose (Air-Gapped)
+## 19. Deploy the Full Stack (Docker Compose)
 
 ```bash
 ./scripts/appstorectl.sh airgap deploy compose
 ```
 
-This:
-1. Links the latest DB dump as `appstore_db_latest.sql.gz`
-2. Starts the Compose stack (postgres, appstore, nginx, fileserver)
-3. The `db-import` service runs once and imports the SQL dump
-4. Waits for the appstore health endpoint
+This starts all services using the pre-loaded images (no internet access):
+- `postgres` — App Store database
+- `postgres-nc` — Nextcloud database
+- `db-import` — one-shot job that imports the App Store DB dump
+- `appstore` — App Store backend
+- `nginx` — TLS reverse proxy
+- `fileserver` — App package server
+- `nextcloud` — Nextcloud (auto-installs on first boot)
 
-After deployment:
+Monitor the deployment:
 
 ```bash
-# Check all containers
+# Watch all containers come up
 docker compose -f airgapped/docker-compose/docker-compose.airgapped.yml ps
 
-# View logs
-docker compose -f airgapped/docker-compose/docker-compose.airgapped.yml logs -f
+# Watch the DB import complete
+docker logs appstore-db-import -f
 
-# App Store is available at:
-curl -k https://localhost:30443/health/
+# Watch Nextcloud install (takes ~60s)
+docker logs nextcloud -f
+# Ready when you see: "Nextcloud was successfully installed"
 ```
 
-To include the managed test Nextcloud:
+Expected service endpoints after deployment:
 
-```bash
-docker compose \
-  -f airgapped/docker-compose/docker-compose.airgapped.yml \
-  -f airgapped/docker-compose/docker-compose.nextcloud-test.yml \
-  up -d
-```
+| Service | URL |
+|---|---|
+| Nextcloud | http://localhost:8081 |
+| App Store HTTPS | https://localhost:30443 |
+| App Store admin | https://localhost:30443/admin/ |
+| File server | https://localhost:30444/apps/ |
 
 ---
 
-## 19. Deploying on Kubernetes (Air-Gapped)
+## 20. Deploy the Full Stack (Kubernetes)
+
+If deploying on Kubernetes instead:
 
 ```bash
 ./scripts/appstorectl.sh airgap deploy k8s
 ```
 
-This applies manifests in order (`01-namespace.yaml` through `11-configure-nextcloud-job.yaml`) with `imagePullPolicy: Never`. A DB import Job runs once after the postgres pod is ready.
+This applies manifests in order (`01-namespace.yaml` through `11-configure-nextcloud-job.yaml`). All manifests use `imagePullPolicy: Never` since images were loaded in step 18.
 
-Monitor the deployment:
+Monitor:
 
 ```bash
 kubectl get pods -n nextcloud-appstore -w
 kubectl logs job/appstore-db-import -n nextcloud-appstore
 ```
 
-All manifests use `imagePullPolicy: Never` — Docker images must be loaded first (section 17).
+---
 
-To use a different kubectl context:
+## 21. Connect Nextcloud to the Local App Store
+
+Once Nextcloud finishes installing (step 19/20), connect it to the App Store:
 
 ```bash
-KUBECTL_CONTEXT=my-cluster ./scripts/appstorectl.sh airgap deploy k8s
+./scripts/appstorectl.sh airgap configure-nextcloud
+```
+
+This script:
+1. Waits for Nextcloud to be fully ready
+2. Installs the App Store CA certificate inside Nextcloud (`update-ca-certificates`)
+3. Sets `appstoreenabled = true` via `php occ`
+4. Sets `appstoreurl` to your local App Store URL
+5. Tests that Nextcloud can reach the App Store API from inside the container
+6. Rolls back the configuration if the connectivity test fails
+
+On success:
+
+```
+[OK]    Connectivity test passed — Nextcloud can reach the App Store.
+[OK]    Configuration complete.
 ```
 
 ---
 
-## 20. TLS Certificate Management
+## 22. Validate the Air-Gapped Deployment
 
-The App Store uses a self-signed CA chain generated by `k8s/generate-certs.sh`:
-- `k8s/certs/root-ca.crt` — Root CA certificate (distribute this to NC hosts)
-- `k8s/certs/appstore.crt` / `appstore.key` — Server certificate
+Run the full validation suite:
 
-### Regenerate certificates
+```bash
+./scripts/appstorectl.sh airgap test compose
+# or
+./scripts/appstorectl.sh airgap test k8s
+```
+
+The suite checks:
+- All services are running and healthy
+- App Store `/health/` endpoint responds
+- App Store `/api/v1/` returns valid JSON
+- Fileserver is reachable
+- **All download URLs in the database point to the local fileserver** (no `apps.nextcloud.com`)
+- At least one app package is downloadable from the local fileserver
+- Nextcloud `appstoreurl` is set to the local App Store
+- `php occ app:list` works (confirms NC can query the store)
+
+All checks must pass. Warnings indicate incomplete setup (e.g. no packages mirrored yet).
+
+---
+
+## 23. Access Nextcloud and Confirm Apps Load
+
+```
+http://localhost:8081
+```
+
+Log in with the admin credentials from `.env`. Navigate to **Apps**.
+
+You should see the full app catalog from your local App Store. Installing an app from this list downloads the package from the local fileserver (`https://localhost:30444`) — not from the internet.
+
+To confirm an app installs correctly:
+
+```bash
+docker exec -u www-data nextcloud php occ app:install calendar
+docker exec -u www-data nextcloud php occ app:list | grep calendar
+```
+
+---
+
+# Phase 5 — Update Cycle
+
+## 24. Update the App Catalog on the Commercial Side
+
+On the commercial host, when you need to add new apps or update existing ones:
+
+```bash
+# 1. Ensure the commercial stack is running
+./scripts/appstorectl.sh online up
+
+# 2. Pull updated metadata from upstream App Store
+./scripts/appstorectl.sh online sync
+
+# 3. Update the allowlist if you want new apps
+./scripts/appstorectl.sh online apps allowlist add new_app
+
+# 4. Re-check compatibility
+./scripts/appstorectl.sh online apps check-compat --nc-version 30.0.1
+
+# 5. Download updated/new packages
+./scripts/appstorectl.sh online apps mirror-approved --nc-version 30.0.1
+
+# 6. Rewrite URLs (for any newly downloaded packages)
+./scripts/appstorectl.sh online mirror
+
+# 7. Re-export the database
+./scripts/appstorectl.sh online export-db
+```
+
+---
+
+## 25. Build and Transfer an Updated Bundle
+
+```bash
+# Build the new bundle (only changed app packages need downloading again)
+./scripts/appstorectl.sh online export --nc-version 30.0.1
+
+# Transfer to air-gapped host
+scp nextcloud-appstore-airgap-<new-timestamp>.tar.gz \
+    user@airgap-host:/opt/deployments/
+```
+
+You don't need to transfer the Docker images again unless the App Store image was rebuilt or the Nextcloud version changed.
+
+To transfer only the new data files (faster for updates):
+
+```bash
+# Transfer only DB dump and new app archives
+scp airgapped/exports/appstore_db_<new-timestamp>.sql.gz \
+    user@airgap-host:/opt/Nextcloud-appstore/airgapped/exports/
+
+rsync -av --progress exports/app-archives/files/ \
+    user@airgap-host:/opt/Nextcloud-appstore/airgapped/exports/app-archives/files/
+```
+
+---
+
+## 26. Apply the Update in the Air-Gapped Environment
+
+On the air-gapped host:
+
+```bash
+cd /opt/Nextcloud-appstore
+
+# Update the symlink to point to the new dump
+ln -sf appstore_db_<new-timestamp>.sql.gz \
+    airgapped/exports/appstore_db_latest.sql.gz
+
+# Import the new database dump into the running postgres
+gunzip -c airgapped/exports/appstore_db_latest.sql.gz \
+    | docker exec -i appstore-postgres \
+      psql -U nextcloudappstore nextcloudappstore
+
+# The App Store serves from the DB — no restart needed
+# Verify the catalog updated
+curl -k https://localhost:30443/api/v1/ | python3 -m json.tool | head -30
+```
+
+New app packages placed in `airgapped/exports/app-archives/files/` are served immediately by the fileserver (no restart required).
+
+Then re-validate:
+
+```bash
+./scripts/appstorectl.sh airgap test compose
+```
+
+---
+
+# Operations Reference
+
+## 27. TLS Certificate Management
+
+### Generate/regenerate certificates
 
 ```bash
 bash k8s/generate-certs.sh
 ```
 
-After regenerating, restart the stack so nginx picks up the new certs.
+Run this any time the certificate expires or you change the `APPSTORE_DOMAIN`. After regenerating, restart nginx to pick up the new cert:
+
+```bash
+docker restart appstore-nginx
+```
 
 ### Check certificate expiry
 
@@ -607,438 +827,328 @@ After regenerating, restart the stack so nginx picks up the new certs.
 openssl x509 -in k8s/certs/appstore.crt -noout -dates
 ```
 
-### Trust the CA in different environments
+### Check certificate covers your hostname
 
-**Docker (add to Nextcloud container):**
 ```bash
-docker cp k8s/certs/root-ca.crt nextcloud:/usr/local/share/ca-certificates/appstore-root-ca.crt
+openssl x509 -in k8s/certs/appstore.crt -noout -text \
+    | grep -A3 "Subject Alternative"
+```
+
+If the certificate doesn't cover the hostname, regenerate it:
+
+```bash
+APPSTORE_DOMAIN=appstore.yourdomain.local bash k8s/generate-certs.sh
+```
+
+### Manually trust the CA in Nextcloud
+
+```bash
+docker cp k8s/certs/root-ca.crt \
+    nextcloud:/usr/local/share/ca-certificates/appstore-root-ca.crt
 docker exec nextcloud update-ca-certificates
 docker restart nextcloud
 ```
 
-**Kubernetes (create ConfigMap):**
-```bash
-kubectl create configmap appstore-ca \
-  --from-file=appstore-root-ca.crt=k8s/certs/root-ca.crt \
-  -n nextcloud
-# Then mount it in your NC Deployment and run update-ca-certificates
-```
-
-**Bare-metal:**
-```bash
-sudo cp k8s/certs/root-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt
-sudo update-ca-certificates
-```
-
-The `configure-nextcloud-*.sh` scripts install the CA certificate automatically when `k8s/certs/root-ca.crt` exists. Pass `--no-ca` to skip.
-
 ---
 
-## 21. Configuring Nextcloud — Docker Compose Target
+## 28. Rotating Passwords
 
-Configures a Nextcloud instance running as a Docker Compose service on the same or a reachable host.
-
-```bash
-./scripts/appstorectl.sh airgap configure-nextcloud external-compose
-```
-
-Required `.env` variables:
-
-```bash
-NEXTCLOUD_CONTAINER_NAME=nextcloud   # Container name
-APPSTORE_API_URL=https://appstore.local/api/v1
-```
-
-The script:
-1. Backs up the current `appstoreurl` and `appstoreenabled` values
-2. Installs the CA cert (if available)
-3. Sets `appstoreenabled=true` and `appstoreurl` (idempotent — skips if already correct)
-4. Tests connectivity from inside the NC container to the App Store API
-5. Rolls back on failure
-
-To skip CA installation or connectivity test:
-
-```bash
-NEXTCLOUD_CONTAINER_NAME=nextcloud \
-  bash airgapped/scripts/configure-nextcloud-compose.sh --no-ca --no-test
-```
-
----
-
-## 22. Configuring Nextcloud — Kubernetes Target
-
-```bash
-./scripts/appstorectl.sh airgap configure-nextcloud external-k8s
-```
-
-Required `.env` variables:
-
-```bash
-NEXTCLOUD_K8S_NAMESPACE=nextcloud
-NEXTCLOUD_K8S_POD_SELECTOR=app=nextcloud
-NEXTCLOUD_K8S_CONTAINER=nextcloud
-APPSTORE_API_URL=https://appstore.local/api/v1
-```
-
-The script finds the pod by label selector, backs up config, applies the changes idempotently, tests connectivity, and rolls back on failure.
-
-If the CA ConfigMap approach doesn't work for your NC setup (e.g. read-only filesystem), mount the cert via a volume in your NC Deployment spec instead, then pass `--no-ca`:
-
-```bash
-bash airgapped/scripts/configure-nextcloud-k8s.sh --no-ca
-```
-
----
-
-## 23. Configuring Nextcloud — SSH / Bare-Metal Target
-
-```bash
-./scripts/appstorectl.sh airgap configure-nextcloud external-ssh
-```
-
-Required `.env` variables:
-
-```bash
-NEXTCLOUD_SSH_HOST=192.168.1.100
-NEXTCLOUD_SSH_USER=ubuntu
-NEXTCLOUD_PATH=/var/www/html
-APPSTORE_API_URL=https://appstore.local/api/v1
-```
-
-SSH key authentication must be set up in advance (`ssh-copy-id` or authorized_keys). The script does not prompt for a password.
-
-The connectivity test runs from the remote host using `curl` (or `wget` / PHP as fallback). If it fails, the previous `appstoreurl` is restored automatically.
-
----
-
-## 24. Validating the Air-Gapped Deployment
-
-Run the full validation suite after deployment and after configuring Nextcloud:
-
-```bash
-# Docker Compose
-./scripts/appstorectl.sh airgap test compose
-
-# Kubernetes
-./scripts/appstorectl.sh airgap test k8s
-```
-
-The test script checks:
-- All services/pods are running/ready
-- App Store `/health/` responds over HTTPS
-- `/api/v1/` returns valid JSON
-- Fileserver is reachable
-- **All app download URLs in the DB point to the local fileserver (no public internet URLs)**
-- At least one app package is downloadable from the local fileserver
-- If Nextcloud is configured: `appstoreurl` is set correctly and `app:list` returns results
-
-A successful run with no failures means the deployment is ready to serve apps to Nextcloud.
-
----
-
-## 25. Updating the App Catalog (Re-sync)
-
-To update the app catalog after a period of time (on the online host):
-
-```bash
-# 1. Ensure the stack is running
-./scripts/appstorectl.sh online up
-
-# 2. Sync new metadata
-./scripts/appstorectl.sh online sync
-
-# 3. Check compatibility with target NC version
-./scripts/appstorectl.sh online apps check-compat
-
-# 4. Update the allowlist if needed
-./scripts/appstorectl.sh online apps allowlist add new_app
-
-# 5. Download new/updated packages
-./scripts/appstorectl.sh online apps mirror-approved
-
-# 6. Re-export database (with rewritten URLs)
-./scripts/appstorectl.sh online export-db
-
-# 7. Build and transfer new bundle
-./scripts/appstorectl.sh online export --nc-version 30.0.1
-```
-
-On the air-gapped host, to update without redeploying from scratch:
-
-```bash
-# 1. Load any new images
-./scripts/appstorectl.sh airgap load-images
-
-# 2. Copy updated app archives to the fileserver volume
-# (path depends on your deployment)
-
-# 3. Import the new DB dump
-docker exec -i appstore-postgres psql -U nextcloudappstore nextcloudappstore \
-  < airgapped/exports/appstore_db_<new_timestamp>.sql
-```
-
----
-
-## 26. Rotating the Database Password
+### App Store database password
 
 1. Update `DB_PASSWORD` in `.env`
-2. Stop the stack
-3. Update the postgres user password:
+2. Change the password in postgres:
    ```bash
-   docker exec -it appstore-postgres \
-     psql -U postgres -c "ALTER USER nextcloudappstore PASSWORD 'new_password';"
+   docker exec appstore-postgres \
+       psql -U postgres -c "ALTER USER nextcloudappstore PASSWORD 'newpass';"
    ```
-4. Restart the stack
-5. Verify the App Store reconnects:
+3. Restart the appstore container:
    ```bash
-   curl -k https://localhost:30443/health/
+   docker restart appstore-app
    ```
 
-For Kubernetes: update the secret in `k8s/02-secrets.yaml`, apply it, and restart the appstore deployment.
+### Nextcloud database password
+
+1. Update `NEXTCLOUD_DB_PASSWORD` in `.env`
+2. Change the password:
+   ```bash
+   docker exec appstore-postgres-nc \
+       psql -U postgres -c "ALTER USER nextcloud PASSWORD 'newpass';"
+   ```
+3. Restart Nextcloud:
+   ```bash
+   docker restart nextcloud
+   ```
+
+### Nextcloud admin password
+
+```bash
+docker exec -u www-data nextcloud \
+    php occ user:resetpassword admin
+```
 
 ---
 
-## 27. Backing Up and Restoring the Database
+## 29. Backing Up and Restoring the Database
+
+### App Store database backup
+
+```bash
+./scripts/appstorectl.sh online export-db
+# Output: exports/appstore_db_<timestamp>.sql.gz
+```
 
 ### Manual backup
 
 ```bash
 docker exec appstore-postgres \
-  pg_dump -U nextcloudappstore nextcloudappstore | gzip \
-  > exports/appstore_db_manual_$(date +%Y%m%d).sql.gz
-```
-
-### Scheduled backup (cron)
-
-```bash
-# Add to crontab — daily at 2am
-0 2 * * * cd /opt/Nextcloud-appstore && \
-  ./scripts/appstorectl.sh online export-db >> logs/export.log 2>&1
+    pg_dump -U nextcloudappstore nextcloudappstore \
+    | gzip > exports/appstore_db_manual_$(date +%Y%m%d).sql.gz
 ```
 
 ### Restore from backup
 
 ```bash
-# Stop the appstore container first to avoid write conflicts
+# Stop the appstore container first
 docker stop appstore-app
 
 # Drop and recreate the database
-docker exec appstore-postgres \
-  psql -U postgres -c "DROP DATABASE IF EXISTS nextcloudappstore; \
-    CREATE DATABASE nextcloudappstore OWNER nextcloudappstore;"
+docker exec appstore-postgres psql -U postgres -c \
+    "DROP DATABASE IF EXISTS nextcloudappstore;
+     CREATE DATABASE nextcloudappstore OWNER nextcloudappstore;"
 
-# Import the dump
+# Import
 gunzip -c exports/appstore_db_<timestamp>.sql.gz \
-  | docker exec -i appstore-postgres \
-    psql -U nextcloudappstore nextcloudappstore
+    | docker exec -i appstore-postgres \
+      psql -U nextcloudappstore nextcloudappstore
 
 # Restart
 docker start appstore-app
 ```
 
----
-
-## 28. Scaling and High Availability Notes
-
-The App Store backend is stateless (state is in PostgreSQL). For high availability:
-
-- Run multiple `appstore` container replicas behind the nginx upstream
-- Use an external managed PostgreSQL (update `DATABASE_HOST` in `.env`)
-- The fileserver is purely static files — serve from object storage (MinIO, S3) for scale
-
-For Kubernetes, increase replica count in `k8s/06-appstore.yaml`:
-
-```yaml
-spec:
-  replicas: 3
-```
-
-The `db-import` Job (`k8s/10-import-db-job.yaml`) and `configure-nextcloud` Job (`k8s/11-configure-nextcloud-job.yaml`) are one-shot — they will not re-run unless deleted and recreated.
-
----
-
-## 29. Troubleshooting: App Store Not Reachable
-
-**Symptom:** `curl -k https://<host>:30443/health/` times out or refuses connection.
+### Nextcloud database backup
 
 ```bash
-# Check all containers/pods are running
-./scripts/appstorectl.sh airgap test compose   # or k8s
-
-# Check nginx logs
-docker logs appstore-nginx --tail 50
-
-# Check appstore logs
-docker logs appstore-app --tail 50
-
-# Check the appstore is listening on uWSGI port
-docker exec appstore-app ss -tlnp | grep 8000
+docker exec appstore-postgres-nc \
+    pg_dump -U nextcloud nextcloud \
+    | gzip > exports/nextcloud_db_$(date +%Y%m%d).sql.gz
 ```
-
-**Common causes:**
-- nginx can't reach the appstore via uWSGI socket — check `nginx/nginx.conf` `upstream` block
-- The appstore container crashed on startup — check `docker logs appstore-app` for Django errors
-- Port 30443 is blocked by a firewall rule
 
 ---
 
-## 30. Troubleshooting: Nextcloud Shows Public App Store
-
-**Symptom:** After configuring, Nextcloud still shows apps from `apps.nextcloud.com`.
+## 30. Troubleshooting: Stack Won't Start
 
 ```bash
-# Verify the OCC config was applied
+# See what's running and what failed
+docker compose ps
+
+# Check logs for a specific service
+docker compose logs appstore --tail 50
+docker compose logs nextcloud --tail 50
+docker compose logs nginx --tail 50
+
+# Check if TLS certs exist (nginx will fail without them)
+ls -la k8s/certs/
+# Must have: root-ca.crt, appstore.crt, appstore.key
+
+# If certs are missing, generate them
+bash k8s/generate-certs.sh
+```
+
+Common causes:
+- **Certs missing**: Run `bash k8s/generate-certs.sh`
+- **Port already in use**: Another process on 80, 443, 8081. Find and stop it: `sudo lsof -i :443`
+- **DB password mismatch**: Ensure `DB_PASSWORD` / `NEXTCLOUD_DB_PASSWORD` match between `.env` and running containers. Delete volumes and restart to re-initialize: `docker compose down -v && docker compose up -d`
+
+---
+
+## 31. Troubleshooting: Nextcloud Shows Public App Store
+
+**Symptom:** After configuration, Nextcloud's Apps page still shows apps from `apps.nextcloud.com`.
+
+```bash
+# Check the current OCC configuration
 docker exec -u www-data nextcloud php occ config:system:get appstoreurl
 docker exec -u www-data nextcloud php occ config:system:get appstoreenabled
 
-# Force Nextcloud to clear its app list cache
-docker exec -u www-data nextcloud php occ app:update --all
+# Expected:
+# appstoreurl = https://appstore.local/api/v1   (or your configured domain)
+# appstoreenabled = true
+
+# If not set, re-run setup
+./scripts/appstorectl.sh online setup-nextcloud   # commercial
+# or
+./scripts/appstorectl.sh airgap configure-nextcloud  # air-gapped
+
+# Clear Nextcloud's app cache
+docker exec -u www-data nextcloud php occ maintenance:repair
 ```
 
-**Common causes:**
-- The configure script pointed at the wrong container — check `NEXTCLOUD_CONTAINER_NAME`
-- A `config.php` override or `config.d/` file is overriding `appstoreurl`
-- Nextcloud is caching the app list — wait 5 minutes or clear the cache with `occ maintenance:repair`
-- The configured URL is wrong — it must end with `/api/v1`, not just the domain root
+If `appstoreurl` is correct but apps still come from the internet:
+- Check `config/config.php` inside the NC volume for any override
+- Check `config/config.d/` for a file overriding `appstoreurl`
 
 ---
 
-## 31. Troubleshooting: TLS / Certificate Errors
+## 32. Troubleshooting: TLS Certificate Errors
 
-**Symptom:** `curl: (60) SSL certificate problem: unable to get local issuer certificate`
+**Symptom:** `curl: (60) SSL certificate problem` or Nextcloud shows a connection error to the App Store.
 
 ```bash
-# Test with CA provided explicitly
-curl --cacert k8s/certs/root-ca.crt https://<appstore-host>:30443/health/
+# Test TLS from outside
+curl -k https://localhost:30443/health/       # -k = ignore cert errors
+curl --cacert k8s/certs/root-ca.crt https://localhost:30443/health/  # with CA
 
-# Check certificate details
-openssl s_client -connect <appstore-host>:30443 -CAfile k8s/certs/root-ca.crt
+# Test from inside the Nextcloud container
+docker exec nextcloud curl -v https://appstore.local/api/v1/
 
-# Check certificate is valid for the domain
-openssl x509 -in k8s/certs/appstore.crt -noout -text | grep -A1 "Subject Alternative"
+# If that fails but this works, the CA cert isn't trusted:
+docker exec nextcloud curl -kv https://appstore.local/api/v1/
 ```
 
-If the certificate doesn't include the hostname you're using, regenerate with `bash k8s/generate-certs.sh` and add the correct SAN.
-
-Inside a Nextcloud container that rejects the cert:
+**Fix — reinstall the CA cert:**
 
 ```bash
-docker exec nextcloud curl -v https://<appstore-host>:30443/api/v1/
-# Then install the CA cert (section 20) and retry
+docker cp k8s/certs/root-ca.crt \
+    nextcloud:/usr/local/share/ca-certificates/appstore-root-ca.crt
+docker exec nextcloud update-ca-certificates
+docker restart nextcloud
+```
+
+**Check the cert covers your domain:**
+
+```bash
+openssl s_client -connect localhost:30443 2>/dev/null \
+    | openssl x509 -noout -text | grep -A3 "Subject Alternative"
+```
+
+If the hostname isn't listed, regenerate the cert:
+
+```bash
+APPSTORE_DOMAIN=appstore.your-new-domain bash k8s/generate-certs.sh
+docker restart appstore-nginx
 ```
 
 ---
 
-## 32. Troubleshooting: Database Import Failures
+## 33. Troubleshooting: App Packages Not Downloading
 
-**Symptom:** App Store starts but returns no apps or gives Django database errors.
+**Symptom:** Nextcloud can list apps but fails when a user tries to install one.
 
 ```bash
-# Check if import ran
-docker logs appstore-db-import --tail 50   # Compose
-kubectl logs job/appstore-db-import -n nextcloud-appstore   # K8s
-
-# Check the DB directly
+# Check the URL stored in the DB for the failing app
 docker exec appstore-postgres \
-  psql -U nextcloudappstore nextcloudappstore \
-  -c "SELECT count(*) FROM nextcloudappstore_core_app;"
+    psql -U nextcloudappstore nextcloudappstore \
+    -c "SELECT app_id, version, download FROM nextcloudappstore_core_apprelease \
+        WHERE app_id = 'calendar' ORDER BY version DESC LIMIT 3;"
 
-# Re-run import manually
+# The download URL should point to your fileserver, not apps.nextcloud.com
+
+# Check the file exists on the fileserver
+curl -k https://localhost:30444/apps/ | grep calendar
+
+# Try downloading directly
+curl -kfsSL https://localhost:30444/apps/<filename>.tar.gz -o /tmp/test.tar.gz
+```
+
+**Fix — if URLs still point to `apps.nextcloud.com`:**
+
+```bash
+# Run the mirror URL rewrite step
+bash scripts/mirror-apps/03-update-db-urls.sh
+
+# Re-export the database
+./scripts/appstorectl.sh online export-db
+
+# In air-gapped: re-import the new dump (section 26)
+```
+
+**Fix — if the file is missing from the fileserver:**
+
+```bash
+# Re-run the download step
+./scripts/appstorectl.sh online apps mirror-approved --nc-version 30.0.1
+```
+
+---
+
+## 34. Troubleshooting: Database Import Failures
+
+**Symptom:** The App Store starts but shows no apps, or Django gives database errors.
+
+```bash
+# Check if the import ran
+docker logs appstore-db-import
+
+# Check if the DB has any data
+docker exec appstore-postgres \
+    psql -U nextcloudappstore nextcloudappstore \
+    -c "SELECT count(*) FROM nextcloudappstore_core_app;"
+
+# Check that the dump file exists and is not empty
+ls -lh airgapped/exports/appstore_db_latest.sql.gz
+file airgapped/exports/appstore_db_latest.sql.gz
+```
+
+**Fix — re-run the import manually:**
+
+```bash
+docker stop appstore-app
+
+# Drop and recreate the database
+docker exec appstore-postgres psql -U postgres -c \
+    "DROP DATABASE IF EXISTS nextcloudappstore;
+     CREATE DATABASE nextcloudappstore OWNER nextcloudappstore;"
+
+# Import
 gunzip -c airgapped/exports/appstore_db_latest.sql.gz \
-  | docker exec -i appstore-postgres \
-    psql -U nextcloudappstore nextcloudappstore
+    | docker exec -i appstore-postgres \
+      psql -U nextcloudappstore nextcloudappstore
+
+docker start appstore-app
 ```
 
-**Common causes:**
-- The `appstore_db_latest.sql.gz` symlink is broken — check `ls -la airgapped/exports/`
-- The dump was created with a different postgres user — check the dump header with `zcat dump.sql.gz | head -20`
-- The database already has data and the import conflicts — drop and recreate (section 27)
+**Fix — if the dump is from the wrong environment:**
+
+The dump must have been created on a stack with `FILE_SERVER_URL` set to a URL reachable from the air-gapped environment. If it still contains `apps.nextcloud.com` URLs, regenerate it on the commercial side after running the mirror step.
 
 ---
 
-## 33. Troubleshooting: App Package Download Failures
-
-**Symptom:** Nextcloud users try to install an app and get a download error.
+## 35. Quick Reference — All Commands
 
 ```bash
-# Check whether the file exists on the fileserver
-curl -k https://localhost:30444/apps/
+# ── COMMERCIAL SIDE ───────────────────────────────────────────────────────────
 
-# Try downloading the specific package
-curl -kfsSL https://localhost:30444/apps/<appname>.tar.gz -o /tmp/test.tar.gz
-
-# Check the DB for the download URL stored for that app
-docker exec appstore-postgres \
-  psql -U nextcloudappstore nextcloudappstore \
-  -c "SELECT app_id, version, download FROM nextcloudappstore_core_apprelease \
-      WHERE app_id = 'calendar' ORDER BY version DESC LIMIT 3;"
-
-# List files on the fileserver volume
-docker exec appstore-fileserver ls /var/www/html/apps/ | head -20
-```
-
-**Common causes:**
-- The archive was not downloaded — run `online apps mirror-approved` or `online mirror`
-- The URL in the DB still points to the original source — re-run `03-update-db-urls.sh` and re-export
-- The file exists but permissions prevent nginx from serving it
-
----
-
-## 34. Security Considerations
-
-- **Never commit `.env`** — it contains database passwords and the Django secret key
-- **Rotate `SECRET_KEY`** before production — use `tr -dc 'a-zA-Z0-9_-' < /dev/urandom | head -c 64`
-- **Avoid `$` in `SECRET_KEY`** — Docker Compose interprets it as variable expansion
-- **Rate limiting** — configured via `THROTTLE_*` variables in `.env`; defaults are conservative
-- **Admin interface** — exposed at `/admin/`; restrict access at the nginx level if needed
-- **CA certificate** — the private key at `k8s/certs/root-ca.key` should never leave the online host; only distribute `root-ca.crt`
-- **App package integrity** — `download-approved.sh` generates SHA-256 checksums; validate them on the air-gapped host before importing
-- **No outbound connections** — once deployed in air-gapped mode, the App Store stack makes no outbound connections; verify with the `test-airgap.sh` suite
-
----
-
-## 35. Quick Reference — All appstorectl Commands
-
-```bash
-# ── Online ────────────────────────────────────────────────────────────────────
-./scripts/appstorectl.sh online audit
+# First-time setup
 ./scripts/appstorectl.sh online up
-./scripts/appstorectl.sh online up managed-nextcloud
-./scripts/appstorectl.sh online sync
-./scripts/appstorectl.sh online sync --limit 50
+./scripts/appstorectl.sh online setup-nextcloud
 
-# App management
+# Sync and populate
+./scripts/appstorectl.sh online sync
 ./scripts/appstorectl.sh online apps allowlist list
 ./scripts/appstorectl.sh online apps allowlist add <app_id>
 ./scripts/appstorectl.sh online apps allowlist remove <app_id>
-./scripts/appstorectl.sh online apps allowlist status
-./scripts/appstorectl.sh online apps check-compat [--nc-version X.Y.Z]
-./scripts/appstorectl.sh online apps report [--nc-version X.Y.Z]
-./scripts/appstorectl.sh online apps mirror-approved [--nc-version X.Y.Z] [--force]
-
-# Mirror and export
+./scripts/appstorectl.sh online apps check-compat --nc-version 30.0.1
+./scripts/appstorectl.sh online apps report --nc-version 30.0.1
+./scripts/appstorectl.sh online apps mirror-approved --nc-version 30.0.1
 ./scripts/appstorectl.sh online mirror
 ./scripts/appstorectl.sh online export-db
-./scripts/appstorectl.sh online export [--nc-version X.Y.Z] [--skip-images]
 
-# Configure Nextcloud
-./scripts/appstorectl.sh online configure-nextcloud external-compose
-./scripts/appstorectl.sh online configure-nextcloud external-k8s
-./scripts/appstorectl.sh online configure-nextcloud external-ssh
+# Build export bundle
+./scripts/appstorectl.sh online export --nc-version 30.0.1
 
+# Diagnostics
+./scripts/appstorectl.sh online audit
 ./scripts/appstorectl.sh online test
 
-# ── Package ───────────────────────────────────────────────────────────────────
-./scripts/appstorectl.sh package build
-./scripts/appstorectl.sh package build --include-managed-nextcloud
+# ── AIR-GAPPED SIDE ──────────────────────────────────────────────────────────
 
-# ── Air-Gapped ────────────────────────────────────────────────────────────────
+# First-time deployment
 ./scripts/appstorectl.sh airgap load-images
-./scripts/appstorectl.sh airgap deploy compose
-./scripts/appstorectl.sh airgap deploy k8s
-./scripts/appstorectl.sh airgap configure-nextcloud external-compose
-./scripts/appstorectl.sh airgap configure-nextcloud external-k8s
-./scripts/appstorectl.sh airgap configure-nextcloud external-ssh
-./scripts/appstorectl.sh airgap test compose
-./scripts/appstorectl.sh airgap test k8s
+./scripts/appstorectl.sh airgap deploy compose     # or: deploy k8s
+./scripts/appstorectl.sh airgap configure-nextcloud
+./scripts/appstorectl.sh airgap test compose       # or: test k8s
+
+# ── PACKAGE BUILD (alternative to online export) ─────────────────────────────
+
+./scripts/appstorectl.sh package build
 ```

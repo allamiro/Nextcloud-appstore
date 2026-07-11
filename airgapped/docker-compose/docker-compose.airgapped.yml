@@ -1,25 +1,39 @@
 # =============================================================================
-# Nextcloud App Store - Air-Gapped Docker Compose
+# Nextcloud App Store — Air-Gapped Docker Compose
 # =============================================================================
-# Deploys: postgres, appstore, nginx, fileserver
-# Does NOT deploy Nextcloud. For testing with Nextcloud, overlay:
-#   docker compose -f docker-compose.airgapped.yml \
-#                  -f docker-compose.nextcloud-test.yml up -d
+# Deploys the complete offline environment from pre-loaded Docker images:
+#   - Nextcloud (with its own PostgreSQL)
+#   - App Store (with its own PostgreSQL)
+#   - Nginx reverse proxy (TLS)
+#   - File server (serves mirrored app archives)
+#   - One-shot DB import job (imports the App Store dump from the bundle)
 #
 # Prerequisites:
-#   - Images must be loaded with: ./airgapped/scripts/load-images.sh
-#   - DB dump must exist at: airgapped/exports/appstore_db_latest.sql.gz
-#   - App archives (optional) must exist at: airgapped/exports/app-archives/files/
-#   - TLS certs must exist at: ../nginx/ssl/ (generate with k8s/generate-certs.sh)
+#   ./scripts/appstorectl.sh airgap load-images
 #
-# Ports exposed:
-#   App Store HTTPS : https://localhost:30443
-#   Fileserver HTTPS: https://localhost:30444
+# Deploy:
+#   ./scripts/appstorectl.sh airgap deploy compose
+#
+# Then connect Nextcloud to the App Store:
+#   ./scripts/appstorectl.sh airgap configure-nextcloud
+#
+# Validate:
+#   ./scripts/appstorectl.sh airgap test compose
+#
+# Ports:
+#   Nextcloud         : http://localhost:8081
+#   App Store HTTPS   : https://localhost:30443
+#   File Server HTTPS : https://localhost:30444
 # =============================================================================
 
 services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — App Store database
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:15-alpine
+    pull_policy: never
     container_name: appstore-postgres
     restart: unless-stopped
     environment:
@@ -36,8 +50,35 @@ services:
     networks:
       - appstore-network
 
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — Nextcloud database (separate instance)
+  # ---------------------------------------------------------------------------
+  postgres-nc:
+    image: postgres:15-alpine
+    pull_policy: never
+    container_name: appstore-postgres-nc
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD:-changeme_nc_password}
+    volumes:
+      - postgres_nc_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nextcloud -d nextcloud"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - appstore-network
+
+  # ---------------------------------------------------------------------------
+  # One-shot: import App Store database dump on first deployment
+  # Exits cleanly if no dump is found (empty DB is also valid)
+  # ---------------------------------------------------------------------------
   db-import:
     image: postgres:15-alpine
+    pull_policy: never
     container_name: appstore-db-import
     restart: "no"
     depends_on:
@@ -51,19 +92,23 @@ services:
       - |
         DUMP="/exports/appstore_db_latest.sql.gz"
         if [ ! -f "$$DUMP" ]; then
-          echo "No DB dump found at $$DUMP — starting with empty database."
+          echo "No DB dump found at $$DUMP — starting with empty App Store database."
           exit 0
         fi
-        echo "Importing database from $$DUMP ..."
+        echo "Importing App Store database from $$DUMP ..."
         gunzip -c "$$DUMP" | psql -h postgres -U nextcloudappstore -d nextcloudappstore --quiet
-        echo "Database import complete."
+        echo "Import complete."
     volumes:
       - ./exports:/exports:ro
     networks:
       - appstore-network
 
+  # ---------------------------------------------------------------------------
+  # App Store Application (Django / uWSGI)
+  # ---------------------------------------------------------------------------
   appstore:
     image: nextcloudappstore:latest
+    pull_policy: never
     container_name: appstore-app
     restart: unless-stopped
     depends_on:
@@ -89,8 +134,13 @@ services:
     networks:
       - appstore-network
 
+  # ---------------------------------------------------------------------------
+  # Nginx — TLS termination for App Store
+  # Network alias: appstore.local (Nextcloud resolves App Store by this name)
+  # ---------------------------------------------------------------------------
   nginx:
     image: nginx:alpine
+    pull_policy: never
     container_name: appstore-nginx
     restart: unless-stopped
     depends_on:
@@ -104,10 +154,18 @@ services:
       - static_files:/srv/static:ro
       - media_files:/srv/media:ro
     networks:
-      - appstore-network
+      appstore-network:
+        aliases:
+          - appstore.local
+          - ${APPSTORE_DOMAIN:-appstore.local}
 
+  # ---------------------------------------------------------------------------
+  # File Server — serves app archives over HTTPS
+  # Network alias: files.local (Nextcloud downloads packages by this name)
+  # ---------------------------------------------------------------------------
   fileserver:
     image: nginx:alpine
+    pull_policy: never
     container_name: appstore-fileserver
     restart: unless-stopped
     ports:
@@ -118,17 +176,47 @@ services:
       - ../../nginx/ssl:/etc/nginx/ssl:ro
       - ./exports/app-archives/files:/srv/apps:ro
     networks:
+      appstore-network:
+        aliases:
+          - files.local
+          - ${FILESERVER_DOMAIN:-files.local}
+
+  # ---------------------------------------------------------------------------
+  # Nextcloud
+  # Auto-installs on first boot. After deploy run configure-nextcloud to
+  # point it at the local App Store.
+  # ---------------------------------------------------------------------------
+  nextcloud:
+    image: nextcloud:stable-apache
+    pull_policy: never
+    container_name: nextcloud
+    restart: unless-stopped
+    depends_on:
+      postgres-nc:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres-nc
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD:-changeme_nc_password}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER:-admin}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:-changeme}
+      NEXTCLOUD_TRUSTED_DOMAINS: "localhost nextcloud nextcloud.local ${NEXTCLOUD_TRUSTED_DOMAINS:-}"
+    ports:
+      - "8081:80"
+    volumes:
+      - nc_data:/var/www/html
+      - ../../k8s/certs:/tmp/appstore-certs:ro
+    networks:
       - appstore-network
 
 volumes:
   postgres_data:
-    driver: local
+  postgres_nc_data:
+  nc_data:
   static_files:
-    driver: local
   media_files:
-    driver: local
   logs:
-    driver: local
 
 networks:
   appstore-network:
