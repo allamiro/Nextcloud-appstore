@@ -208,6 +208,13 @@ online_up() {
 
     require_cmd docker
 
+    # Build the App Store image first — it is a custom image built from the
+    # local Dockerfile and does not exist on Docker Hub. Without this step
+    # Docker Compose would try to pull it and fail.
+    info "Building nextcloudappstore image from Dockerfile..."
+    docker compose -f "${PROJECT_DIR}/docker-compose.yml" build appstore
+
+    info "Starting all services..."
     LOAD_FIXTURES=true IMPORT_TRANSLATIONS=true \
         docker compose -f "${PROJECT_DIR}/docker-compose.yml" up -d
 
@@ -227,10 +234,11 @@ online_up() {
     separator
     info "Stack is up"
     echo ""
-    echo "  App Store  : https://localhost"
-    echo "  Admin      : https://localhost/admin/"
-    echo "  File Srv   : http://localhost:8080/apps/"
-    echo "  Nextcloud  : http://localhost:8081  (installing — wait ~60s on first boot)"
+    echo "  App Store  : https://{IP_ADDRESS}"
+    echo "  Admin      : https://{IP_ADDRESS}/admin/"
+    echo "  File Srv   : http://{IP_ADDRESS}:8080/apps/"
+    echo "  Nextcloud  : http://{IP_ADDRESS}:8081  (installing — wait ~60s on first boot)"
+    echo "  RustFS UI  : http://{IP_ADDRESS}:9001"
     echo ""
     info "Next step: wait for Nextcloud to finish installing, then run:"
     echo "  $0 online setup-nextcloud"
