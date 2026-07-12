@@ -161,11 +161,12 @@ ONLINE (internet required) — first-time workflow:
       Validate the staging deployment is healthy.
 
 PACKAGE:
-  package build [--appstore-only] [--include-managed-nextcloud]
+  package build [--no-nextcloud]
       Build a complete air-gapped deployment package into airgapped/.
-      Default: App Store images only.
-      --appstore-only              Same as default; explicit flag.
-      --include-managed-nextcloud  Also include nextcloud:stable-apache image.
+      Default: includes nextcloud:stable-apache, bitnami/kubectl, and busybox
+      because the air-gapped Compose and K8s manifests require them at
+      pull_policy/imagePullPolicy: Never.
+      --no-nextcloud  Exclude nextcloud:stable-apache (when managing NC separately).
 
 AIRGAP (no internet required) — first-time workflow:
   airgap load-images
@@ -605,18 +606,21 @@ cmd_package() {
 }
 
 package_build() {
-    # Parse flags: --appstore-only (default) vs --include-managed-nextcloud
-    local INCLUDE_NEXTCLOUD=false
+    # Default: include nextcloud:stable-apache because both the air-gapped Docker
+    # Compose manifest (pull_policy: never) and K8s manifests (imagePullPolicy: Never)
+    # require it. Use --no-nextcloud only when you manage Nextcloud separately.
+    local INCLUDE_NEXTCLOUD=true
     for _arg in "$@"; do
         case "${_arg}" in
-            --include-managed-nextcloud) INCLUDE_NEXTCLOUD=true ;;
-            --appstore-only)             INCLUDE_NEXTCLOUD=false ;;
+            --no-nextcloud)              INCLUDE_NEXTCLOUD=false ;;
+            --include-managed-nextcloud) INCLUDE_NEXTCLOUD=true ;;  # legacy alias
+            --appstore-only)             INCLUDE_NEXTCLOUD=false ;;  # legacy alias
         esac
     done
 
     separator
     info "Building air-gapped deployment package"
-    info "  include-managed-nextcloud : ${INCLUDE_NEXTCLOUD}"
+    info "  include-nextcloud : ${INCLUDE_NEXTCLOUD}"
     separator
 
     require_cmd docker
@@ -636,7 +640,19 @@ package_build() {
         "${PROJECT_DIR}"
 
     # ── 2. Save images ────────────────────────────────────────────────────────
-    local images=("nextcloudappstore:latest" "postgres:15-alpine" "nginx:alpine" "rustfs/rustfs:latest" "minio/mc:latest")
+    # Base list covers all manifests with imagePullPolicy: Never / pull_policy: never.
+    # bitnami/kubectl  — airgapped/k8s/11-configure-nextcloud-job.yaml
+    # busybox          — airgapped/k8s/15-rustfs-init-job.yaml
+    # minio/mc         — airgapped/k8s/10-import-db-job.yaml
+    local images=(
+        "nextcloudappstore:latest"
+        "postgres:15-alpine"
+        "nginx:alpine"
+        "rustfs/rustfs:latest"
+        "minio/mc:latest"
+        "bitnami/kubectl:latest"
+        "busybox:latest"
+    )
     if [ "${INCLUDE_NEXTCLOUD}" = "true" ]; then
         images+=("nextcloud:stable-apache")
     fi

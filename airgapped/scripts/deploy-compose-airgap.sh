@@ -46,9 +46,19 @@ else
     echo "WARNING: No DB dump found in ${EXPORTS_DIR} — App Store will start with an empty database."
 fi
 
-echo "Starting services..."
+AIRGAP_ENV="${COMPOSE_DIR}/.env"
+if [ ! -f "${AIRGAP_ENV}" ]; then
+    echo "ERROR: environment file not found: ${AIRGAP_ENV}"
+    echo ""
+    echo "Create it from the template and fill in your values:"
+    echo "  cp airgapped/docker-compose/.env.airgapped.example airgapped/docker-compose/.env"
+    echo "  \$EDITOR airgapped/docker-compose/.env"
+    exit 1
+fi
+
+echo "Starting services (env: ${AIRGAP_ENV})..."
 docker compose -f "${COMPOSE_DIR}/docker-compose.airgapped.yml" \
-    --env-file "${COMPOSE_DIR}/.env.airgapped.example" \
+    --env-file "${AIRGAP_ENV}" \
     up -d
 
 echo ""

@@ -46,9 +46,14 @@ if [ -n "${LIMIT_VAL}" ]; then
 fi
 echo ""
 
-# Check if appstore container is running
-if ! docker compose ps appstore | grep -qE '(Up|running)'; then
-    echo "Error: appstore container is not running"
+# Check if the appstore container is running.
+# Use docker inspect rather than 'docker compose ps' so the check works
+# regardless of which compose files were used to start the stack (the macOS
+# overlay uses a different file set and 'docker compose ps' without those
+# flags would not see the running container).
+APPSTORE_CONTAINER="${APPSTORE_CONTAINER_NAME:-appstore-app}"
+if ! docker inspect "${APPSTORE_CONTAINER}" --format='{{.State.Running}}' 2>/dev/null | grep -q true; then
+    echo "Error: appstore container '${APPSTORE_CONTAINER}' is not running"
     echo "Start it with: ./scripts/appstorectl.sh online up"
     exit 1
 fi
@@ -66,7 +71,7 @@ fi
 echo "Syncing apps from official Nextcloud App Store..."
 echo "This may take 5–15 minutes depending on your connection speed..."
 
-docker compose exec -T appstore python manage.py shell <<PYEOF
+docker exec -i "${APPSTORE_CONTAINER}" python manage.py shell <<PYEOF
 import requests
 from django.db import transaction
 from django.contrib.auth import get_user_model

@@ -36,7 +36,20 @@ airgapped/
 
 ## Quick Start
 
-All commands below assume you are in the repository root and have copied `.env.example` to `.env`.
+All commands below assume you are in the repository root and have already:
+- Copied `.env.example` to `.env` (project root)
+- Received the bundle from the commercial staging host
+
+### 0. Configure the Air-Gapped Environment File
+
+The Docker Compose deployment reads `airgapped/docker-compose/.env`. This file
+**must exist** — the deploy script will fail with a clear error if it is missing.
+
+```bash
+cp airgapped/docker-compose/.env.airgapped.example airgapped/docker-compose/.env
+# Edit to match your air-gapped host IP, passwords, and domain
+$EDITOR airgapped/docker-compose/.env
+```
 
 ### 1. Load Images
 
