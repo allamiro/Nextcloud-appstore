@@ -450,6 +450,17 @@ kubectl exec -n ${NS} ${APPSTORE_POD} -- \
     python manage.py syncnextcloudreleases --oldest-supported 13.0.0
 ```
 
+> **Note:** `syncnextcloudreleases` queries the GitHub API and requires a `GITHUB_API_TOKEN` in `appstore-secrets`. Without it the command returns HTTP 401 and populates no versions. If you don't have a token, create the NC version rows manually via Django shell:
+> ```bash
+> kubectl exec -n ${NS} ${APPSTORE_POD} -- python manage.py shell -c "
+> from nextcloudappstore.core.models import NextcloudRelease
+> for ver in ['25.0.0','26.0.0','27.0.0','28.0.0','29.0.0','30.0.0','31.0.0','32.0.0','33.0.0']:
+>     NextcloudRelease.objects.get_or_create(version=ver, defaults={
+>         'is_current': ver=='33.0.0', 'has_release': True, 'is_supported': True})
+> print('Done:', NextcloudRelease.objects.count(), 'versions')
+> "
+> ```
+
 The `08-cronjob.yaml` also deploys a `sync-nextcloud-releases` CronJob that runs this
 command hourly, keeping the NC version list up to date automatically.
 
@@ -469,19 +480,19 @@ kubectl exec -n ${NS} ${NC_POD} -- bash -c \
 
 # Point Nextcloud at the local App Store
 kubectl exec -n ${NS} ${NC_POD} -- \
-    sudo -u www-data php occ config:system:set appstoreenabled --value=true --type=boolean
+    runuser -u www-data -- php occ config:system:set appstoreenabled --value=true --type=boolean
 kubectl exec -n ${NS} ${NC_POD} -- \
-    sudo -u www-data php occ config:system:set appstoreurl \
+    runuser -u www-data -- php occ config:system:set appstoreurl \
     --value="https://{IP_ADDRESS}:30443/api/v1"
 
 # Allow connections to the internal App Store host (bypasses Nextcloud SSRF protection)
 kubectl exec -n ${NS} ${NC_POD} -- \
-    sudo -u www-data php occ config:system:set allow_local_remote_servers \
+    runuser -u www-data -- php occ config:system:set allow_local_remote_servers \
     --value=true --type=boolean
 
 # Verify
 kubectl exec -n ${NS} ${NC_POD} -- \
-    sudo -u www-data php occ config:system:get appstoreurl
+    runuser -u www-data -- php occ config:system:get appstoreurl
 # Expected: https://{IP_ADDRESS}:30443/api/v1
 ```
 
@@ -493,8 +504,8 @@ kubectl exec -n ${NS} ${NC_POD} -- \
 NODE_IP="{IP_ADDRESS}"
 
 # App Store health
-curl -sk https://${NODE_IP}:30443/health/
-# Expected: OK
+curl -o /dev/null -sk -w "%{http_code}" https://${NODE_IP}:30443/
+# Expected: 200 (no /health/ endpoint — main page confirms Django is up)
 
 # API returns apps
 curl -sk "https://${NODE_IP}:30443/api/v1/platform/33.0.0/apps.json" \
@@ -508,7 +519,8 @@ curl -s http://${NODE_IP}:30082/status.php | python3 -m json.tool | grep install
 # Expected: "installed": true
 
 # RustFS
-curl -s http://${NODE_IP}:30900/minio/health/live && echo OK
+nc -zv ${NODE_IP} 30900 && echo "RustFS port open"
+# RustFS requires auth for all HTTP endpoints; TCP confirms port is reachable
 ```
 
 Log in to Nextcloud at `http://{IP_ADDRESS}:30082`, navigate to **Apps** — the list
@@ -521,7 +533,7 @@ should be populated from the local App Store.
 | App Store UI | `https://{IP_ADDRESS}:30443/` | from `k8s/02-secrets.yaml` |
 | App Store Admin | `https://{IP_ADDRESS}:30443/admin/` | `ADMIN_USERNAME` / `ADMIN_PASSWORD` |
 | App Store API | `https://{IP_ADDRESS}:30443/api/v1/` | public |
-| App Store health | `https://{IP_ADDRESS}:30443/health/` | public |
+| App Store main page | `https://{IP_ADDRESS}:30443/` | public — no dedicated /health/ endpoint |
 | File server (HTTPS) | `https://{IP_ADDRESS}:30444/apps/` | public |
 | Nextcloud | `http://{IP_ADDRESS}:30082/` | `NEXTCLOUD_ADMIN_USER` / `NEXTCLOUD_ADMIN_PASSWORD` |
 | RustFS S3 API | `http://{IP_ADDRESS}:30900/` | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` |
@@ -1275,11 +1287,12 @@ postgres-nc-service   ClusterIP   10.x.x.x        <none>        5432/TCP
 NODE_IP="192.168.1.100"    # replace with your node IP
 
 # Health check (HTTP — should redirect)
-curl -v http://${NODE_IP}:30080/health/
+curl -o /dev/null -s -w "%{http_code}" http://${NODE_IP}:30080/
+# Expected: 301 (redirects to HTTPS)
 
 # HTTPS health check (self-signed cert — use -k)
-curl -sk https://${NODE_IP}:30443/health/
-# Expected: OK
+curl -o /dev/null -sk -w "%{http_code}" https://${NODE_IP}:30443/
+# Expected: 200 (no /health/ endpoint — main page confirms Django is up)
 
 # API endpoint
 curl -sk https://${NODE_IP}:30443/api/v1/platform/8/apps.json | python3 -m json.tool | head -30
@@ -1328,11 +1341,11 @@ NC_POD=$(kubectl get pod -l app=nextcloud -n nextcloud-appstore \
     -o jsonpath='{.items[0].metadata.name}')
 
 kubectl exec -n nextcloud-appstore ${NC_POD} -- \
-    sudo -u www-data php occ config:system:get appstoreurl
+    runuser -u www-data -- php occ config:system:get appstoreurl
 # Expected: https://192.168.1.100:30443/api/v1
 
 kubectl exec -n nextcloud-appstore ${NC_POD} -- \
-    sudo -u www-data php occ config:system:get appstoreenabled
+    runuser -u www-data -- php occ config:system:get appstoreenabled
 # Expected: true
 ```
 
@@ -1342,7 +1355,7 @@ kubectl exec -n nextcloud-appstore ${NC_POD} -- \
 NODE_IP="192.168.1.100"
 
 # S3 health check
-curl -s http://${NODE_IP}:30900/minio/health/live
+nc -zv ${NODE_IP} 30900 && echo "RustFS port open"
 # Expected: 200 OK (empty body)
 
 echo "RustFS Console: http://${NODE_IP}:30901"
@@ -1358,11 +1371,11 @@ Run through this checklist after each deployment:
 
 ```
 [ ] kubectl get pods -n nextcloud-appstore  — all Running, none in CrashLoopBackOff
-[ ] curl -sk https://{IP}:30443/health/     — returns "OK"
+[ ] curl -o /dev/null -sk -w "%{http_code}" https://{IP}:30443/  — returns 200
 [ ] curl -sk https://{IP}:30443/api/v1/platform/8/apps.json — returns JSON
 [ ] curl -sk https://{IP}:30444/apps/        — returns directory listing with .tar.gz
 [ ] curl -s http://{IP}:30082/status.php     — returns {"installed":true,...}
-[ ] curl -s http://{IP}:30900/minio/health/live — returns 200
+[ ] nc -zv {IP} 30900  — RustFS port open (HTTP requires auth)
 [ ] Nextcloud UI login works
 [ ] Nextcloud Apps page shows apps from local App Store
 [ ] RustFS console accessible at http://{IP}:30901
@@ -1413,8 +1426,8 @@ kubectl exec -it deployment/postgres -n ${NS} -- psql -U nextcloudappstore
 
 # Run occ commands in Nextcloud
 NC_POD=$(kubectl get pod -l app=nextcloud -n ${NS} -o jsonpath='{.items[0].metadata.name}')
-kubectl exec -n ${NS} ${NC_POD} -- sudo -u www-data php occ config:list system
-kubectl exec -n ${NS} ${NC_POD} -- sudo -u www-data php occ app:list
+kubectl exec -n ${NS} ${NC_POD} -- runuser -u www-data -- php occ config:list system
+kubectl exec -n ${NS} ${NC_POD} -- runuser -u www-data -- php occ app:list
 
 # View events (useful for PVC and scheduling issues)
 kubectl get events -n ${NS} --sort-by='.lastTimestamp'
@@ -1632,11 +1645,12 @@ echo "  RustFS S3 API   : http://${NODE_IP}:30900"
 echo "  RustFS Console  : http://${NODE_IP}:30901"
 echo ""
 echo "Validation:"
-echo "  curl -sk https://${NODE_IP}:30443/health/"
+echo "  curl -o /dev/null -sk -w "%{http_code}" https://${NODE_IP}:30443/
+# Expected: 200 (no /health/ endpoint — main page confirms Django is up)"
 echo "  curl -sk https://${NODE_IP}:30443/api/v1/platform/8/apps.json | python3 -m json.tool | head"
 echo "  curl -sk https://${NODE_IP}:30444/apps/"
 echo "  curl -s http://${NODE_IP}:30082/status.php"
-echo "  curl -s http://${NODE_IP}:30900/minio/health/live"
+echo "  nc -zv ${NODE_IP} 30900 && echo "RustFS port open""
 ```
 
 ---
@@ -1941,24 +1955,24 @@ APP_STORE_URL="https://${NODE_IP}:30443/api/v1"
 
 # Enable the custom App Store
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    sudo -u www-data php occ config:system:set appstoreenabled \
+    runuser -u www-data -- php occ config:system:set appstoreenabled \
     --value=true --type=boolean
 
 # Set the URL
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    sudo -u www-data php occ config:system:set appstoreurl \
+    runuser -u www-data -- php occ config:system:set appstoreurl \
     --value="${APP_STORE_URL}"
 
 # CRITICAL: Allow NC to reach the private-IP App Store (bypasses SSRF filter).
 # Without this flag, occ app:install fails with:
 #   "Host {NODE_IP} violates local access rules"
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    sudo -u www-data php occ config:system:set allow_local_remote_servers \
+    runuser -u www-data -- php occ config:system:set allow_local_remote_servers \
     --value=true --type=boolean
 
 # Verify
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    sudo -u www-data php occ config:system:get appstoreurl
+    runuser -u www-data -- php occ config:system:get appstoreurl
 # Expected: https://{NODE_IP}:30443/api/v1
 ```
 
@@ -1968,8 +1982,8 @@ kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
 NODE_IP="{IP_ADDRESS}"
 
 # App Store health
-curl -sk https://${NODE_IP}:30443/health/
-# Expected: OK
+curl -o /dev/null -sk -w "%{http_code}" https://${NODE_IP}:30443/
+# Expected: 200 (no /health/ endpoint — main page confirms Django is up)
 
 # API returns apps
 curl -sk "https://${NODE_IP}:30443/api/v1/platform/33.0.0/apps.json" \
@@ -1978,7 +1992,7 @@ curl -sk "https://${NODE_IP}:30443/api/v1/platform/33.0.0/apps.json" \
 
 # Install an app from inside NC
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    sudo -u www-data php occ app:install calendar
+    runuser -u www-data -- php occ app:install calendar
 # Expected: calendar x.x.x installed
 ```
 
@@ -2125,7 +2139,7 @@ NC_POD=$(kubectl get pod -l "${NC_SELECTOR}" -n ${NC_NS} \
     -o jsonpath='{.items[0].metadata.name}')
 
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    sudo -u www-data php occ config:system:set allow_local_remote_servers \
+    runuser -u www-data -- php occ config:system:set allow_local_remote_servers \
     --value=true --type=boolean
 ```
 
@@ -2161,16 +2175,16 @@ curl -sk "https://${NODE_IP}:30443/api/v1/platform/33.0.0/apps.json" \
 
 # NC config is correct
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    sudo -u www-data php occ config:system:get appstoreurl
+    runuser -u www-data -- php occ config:system:get appstoreurl
 # Expected: https://{NODE_IP}:30443/api/v1
 
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    sudo -u www-data php occ config:system:get allow_local_remote_servers
+    runuser -u www-data -- php occ config:system:get allow_local_remote_servers
 # Expected: true
 
 # Install a test app
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    sudo -u www-data php occ app:install calendar
+    runuser -u www-data -- php occ app:install calendar
 # Expected: calendar x.x.x installed
 
 # Confirm download came from local file server (not github.com)
