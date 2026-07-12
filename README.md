@@ -6,39 +6,49 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        STAGING SYSTEM (Internet Connected)                   │
+│                  COMMERCIAL (Internet-Connected) — Docker Compose            │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  1. Build Docker image                                                       │
-│  2. Run staging environment with docker-compose                              │
-│  3. Populate database (admin user, fixtures, sync releases)                  │
-│  4. Download app archives (for full air-gap)                                 │
-│  5. Export Docker images + PostgreSQL dump                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼ Transfer exports/
+│                                                                              │
+│  ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌────────────┐               │
+│  │  Nginx   │  │App Store │  │ PostgreSQL │  │  Nextcloud │               │
+│  │  :443    │─▶│  :8000   │─▶│  (AS DB)  │  │   :8081    │               │
+│  │  :80     │  │ (uWSGI)  │  └────────────┘  └─────┬──────┘               │
+│  └──────────┘  └──────────┘                        │ uses                 │
+│                                                     ▼                      │
+│  ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌────────────┐               │
+│  │FileServer│  │  RustFS  │  │ PostgreSQL │  │  Nextcloud │               │
+│  │  :8080   │  │:9000(S3) │  │  (NC DB)  │  │  Config    │               │
+│  │  :8443   │  │:9001(UI) │  └────────────┘  │  via occ   │               │
+│  └──────────┘  └──────────┘                  └────────────┘               │
+│                                                                              │
+│  Workflow: sync → allowlist → mirror → export bundle → upload to RustFS     │
+└──────────────────────────┬──────────────────────────────────────────────────┘
+                           │  Transfer: images + DB dump + app archives
+                           ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    PRODUCTION (Disconnected Kubernetes)                      │
+│          AIR-GAPPED (Offline) — Docker Compose or Kubernetes                │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
-│  │   Nginx     │───▶│  App Store  │───▶│  PostgreSQL │    │ File Server │  │
-│  │  :30443     │    │   (uWSGI)   │    │  (Database) │    │   :30444    │  │
-│  │  NodePort   │    └─────────────┘    └─────────────┘    │ App Archives│  │
-│  └─────────────┘           │                              └─────────────┘  │
-│         │                  │                                     │          │
-│         │                  ▼                                     │          │
-│         │           ┌─────────────┐    ┌─────────────┐          │          │
-│         │           │   Static    │    │    Media    │          │          │
-│         │           │    PVC      │    │     PVC     │          │          │
-│         │           └─────────────┘    └─────────────┘          │          │
-│         │                                                        │          │
-│         └────────────────────┬───────────────────────────────────┘          │
-│                              ▼                                              │
-│                       ┌─────────────┐                                       │
-│                       │  Nextcloud  │  ← Queries API + Downloads Apps       │
-│                       │   Server    │                                       │
-│                       └─────────────┘                                       │
+│                                                                              │
+│  ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌────────────┐               │
+│  │  Nginx   │  │App Store │  │ PostgreSQL │  │  Nextcloud │               │
+│  │DC::443   │─▶│  :8000   │─▶│  (AS DB)  │  │ DC::8081   │               │
+│  │K8s:30443 │  │ (uWSGI)  │  └────────────┘  │K8s::30082  │               │
+│  └──────────┘  └──────────┘                  └─────┬──────┘               │
+│                                                     │ uses                 │
+│  ┌──────────┐  ┌──────────┐  ┌────────────┐        ▼                      │
+│  │FileServer│  │  RustFS  │  │ PostgreSQL │  ┌────────────┐               │
+│  │DC::30444 │  │:9000(S3) │  │  (NC DB)  │  │  App Store │               │
+│  │K8s:30444 │  │:9001(UI) │  └────────────┘  │  API /v1   │               │
+│  └──────────┘  └──────────┘                  └────────────┘               │
+│                                                                              │
+│  DC  = Docker Compose ports                                                  │
+│  K8s = Kubernetes NodePort                                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Runbooks:**
+- Docker Compose (commercial + air-gapped): [RUN-DOCKER.md](RUN-DOCKER.md)
+- Kubernetes (air-gapped): [RUN-K8s.md](RUN-K8s.md)
 
 ## Service Ports
 

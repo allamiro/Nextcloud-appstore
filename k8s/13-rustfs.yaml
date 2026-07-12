@@ -1,0 +1,150 @@
+# =============================================================================
+# RustFS — S3-compatible object storage (commercial/staging)
+# =============================================================================
+# Stores DB backups, export bundles, and app archives.
+# Buckets are created by 14-rustfs-init-job.yaml.
+#
+# S3 API  : http://{IP_ADDRESS}:30900
+# Console : http://{IP_ADDRESS}:30901  (login with RUSTFS_ACCESS_KEY / _SECRET_KEY)
+#
+# Buckets:
+#   app-archives  — mirrored app packages (public-read)
+#   backups       — DB dumps (private)
+#   bundles       — export bundles + manifests (private)
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rustfs-secrets
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: rustfs
+type: Opaque
+data:
+  # echo -n "rustfsadmin" | base64  — CHANGE THIS
+  RUSTFS_ACCESS_KEY: cnVzdGZzYWRtaW4=
+  # echo -n "ChangeThisRustFsSecret" | base64  — CHANGE THIS (min 8 chars)
+  RUSTFS_SECRET_KEY: Q2hhbmdlVGhpc1J1c3RGc1NlY3JldA==
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rustfs-data-pvc
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: rustfs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  # storageClassName: standard
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: rustfs
+    app: rustfs
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rustfs
+  template:
+    metadata:
+      labels:
+        app: rustfs
+        app.kubernetes.io/name: nextcloud-appstore
+        app.kubernetes.io/component: rustfs
+    spec:
+      containers:
+        - name: rustfs
+          image: rustfs/rustfs:latest
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data"]
+          ports:
+            - containerPort: 9000
+              name: s3-api
+            - containerPort: 9001
+              name: console
+          env:
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-secrets
+                  key: RUSTFS_ACCESS_KEY
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-secrets
+                  key: RUSTFS_SECRET_KEY
+            - name: RUSTFS_CONSOLE_ENABLE
+              value: "true"
+            - name: RUSTFS_NOTIFY_ENABLE
+              value: "false"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: rustfs-data-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs-service
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: rustfs
+spec:
+  type: NodePort
+  ports:
+    - port: 9000
+      targetPort: 9000
+      nodePort: 30900
+      protocol: TCP
+      name: s3-api
+    - port: 9001
+      targetPort: 9001
+      nodePort: 30901
+      protocol: TCP
+      name: console
+  selector:
+    app: rustfs

@@ -1,0 +1,67 @@
+# =============================================================================
+# RustFS Bucket Initialiser Job (air-gapped)
+# =============================================================================
+# imagePullPolicy: Never — minio/mc:latest and busybox:latest must be loaded.
+# Creates the three required buckets and sets app-archives to public-read.
+# Run after RustFS is healthy: kubectl apply -f airgapped/k8s/15-rustfs-init-job.yaml
+# =============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rustfs-init
+  namespace: nextcloud-appstore
+  labels:
+    app.kubernetes.io/name: nextcloud-appstore
+    app.kubernetes.io/component: rustfs-init
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-rustfs
+          image: busybox:latest
+          imagePullPolicy: Never
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until wget -qO- http://rustfs-service:9000/minio/health/live; do
+                echo "Waiting for RustFS..."
+                sleep 3
+              done
+              echo "RustFS is ready."
+      containers:
+        - name: mc
+          image: minio/mc:latest
+          imagePullPolicy: Never
+          env:
+            - name: RUSTFS_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-secrets
+                  key: RUSTFS_ACCESS_KEY
+            - name: RUSTFS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: rustfs-secrets
+                  key: RUSTFS_SECRET_KEY
+          command:
+            - /bin/sh
+            - -c
+            - |
+              export MC_HOST_appstore="http://${RUSTFS_ACCESS_KEY}:${RUSTFS_SECRET_KEY}@rustfs-service:9000"
+              mc mb --ignore-existing appstore/app-archives
+              mc mb --ignore-existing appstore/backups
+              mc mb --ignore-existing appstore/bundles
+              mc anonymous set download appstore/app-archives
+              echo "RustFS buckets ready:"
+              mc ls appstore/
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
