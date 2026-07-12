@@ -48,8 +48,57 @@ require_cmd() {
     command -v "$1" &>/dev/null || error "'$1' is required but not installed."
 }
 
+# ── macOS bind-mount staging ───────────────────────────────────────────────────
+# Docker Desktop on macOS cannot bind-mount paths inside ~/Desktop (macOS TCC).
+# When running on macOS, stage all host-path config files to ~/.appstore-runtime/
+# so Docker can access them.
+RUNTIME_DIR="${HOME}/.appstore-runtime"
+
+_on_macos() { [[ "$(uname)" == "Darwin" ]]; }
+
+_stage_runtime_configs() {
+    info "Staging host configs to ${RUNTIME_DIR} (macOS Docker Desktop workaround)..."
+    mkdir -p \
+        "${RUNTIME_DIR}/nginx/ssl" \
+        "${RUNTIME_DIR}/fileserver" \
+        "${RUNTIME_DIR}/config" \
+        "${RUNTIME_DIR}/k8s/certs" \
+        "${RUNTIME_DIR}/exports/app-archives/files"
+
+    cp "${PROJECT_DIR}/nginx/nginx.conf"      "${RUNTIME_DIR}/nginx/"
+    cp "${PROJECT_DIR}/fileserver/nginx.conf"  "${RUNTIME_DIR}/fileserver/"
+
+    if ls "${PROJECT_DIR}/nginx/ssl/"*.{crt,key} &>/dev/null; then
+        cp "${PROJECT_DIR}/nginx/ssl/"*.crt "${RUNTIME_DIR}/nginx/ssl/" 2>/dev/null || true
+        cp "${PROJECT_DIR}/nginx/ssl/"*.key "${RUNTIME_DIR}/nginx/ssl/" 2>/dev/null || true
+    fi
+
+    cp "${PROJECT_DIR}/config/"*              "${RUNTIME_DIR}/config/"    2>/dev/null || true
+    cp "${PROJECT_DIR}/k8s/certs/"*           "${RUNTIME_DIR}/k8s/certs/" 2>/dev/null || true
+
+    if command -v rsync &>/dev/null; then
+        rsync -a --delete \
+            "${PROJECT_DIR}/exports/app-archives/files/" \
+            "${RUNTIME_DIR}/exports/app-archives/files/" 2>/dev/null || true
+    fi
+
+    info "Config staging complete → ${RUNTIME_DIR}"
+}
+
+# Returns the compose -f flags appropriate for the current platform.
+# On macOS: base file + macOS overlay; on Linux: base file only.
+_compose_files() {
+    local base="-f ${PROJECT_DIR}/docker-compose.yml"
+    if _on_macos; then
+        echo "${base} -f ${PROJECT_DIR}/docker-compose.macos.yml"
+    else
+        echo "${base}"
+    fi
+}
+
 require_running_appstore() {
-    docker compose -f "${PROJECT_DIR}/docker-compose.yml" ps appstore \
+    # shellcheck disable=SC2046
+    docker compose $(_compose_files) ps appstore \
         2>/dev/null | grep -q "Up" \
         || error "App Store container is not running. Start with: $0 online up"
 }
@@ -183,7 +232,8 @@ online_audit() {
 
     echo ""
     echo "── Compose stack status ───────────────────────────────"
-    docker compose -f "${PROJECT_DIR}/docker-compose.yml" ps 2>/dev/null || echo "  (not running)"
+    # shellcheck disable=SC2046
+    docker compose $(_compose_files) ps 2>/dev/null || echo "  (not running)"
 
     echo ""
     echo "── Environment ────────────────────────────────────────"
@@ -208,22 +258,33 @@ online_up() {
 
     require_cmd docker
 
+    # Stage configs for macOS Docker Desktop (Desktop folder bind-mount restriction)
+    if _on_macos; then
+        _stage_runtime_configs
+    fi
+
+    local CF
+    CF="$(_compose_files)"
+
     # Build the App Store image first — it is a custom image built from the
     # local Dockerfile and does not exist on Docker Hub. Without this step
     # Docker Compose would try to pull it and fail.
     info "Building nextcloudappstore image from Dockerfile..."
-    docker compose -f "${PROJECT_DIR}/docker-compose.yml" build appstore
+    # shellcheck disable=SC2086
+    docker compose ${CF} build appstore
 
     info "Starting all services..."
+    # shellcheck disable=SC2086
     LOAD_FIXTURES=true IMPORT_TRANSLATIONS=true \
-        docker compose -f "${PROJECT_DIR}/docker-compose.yml" up -d
+        docker compose ${CF} up -d
 
     echo ""
-    info "Waiting for App Store to be healthy..."
+    info "Waiting for App Store to be healthy (uWSGI on :8000)..."
     RETRIES=40
-    until docker compose -f "${PROJECT_DIR}/docker-compose.yml" \
+    # shellcheck disable=SC2086
+    until docker compose ${CF} \
             exec -T appstore python -c \
-            "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/')" \
+            "import socket; s=socket.socket(); s.settimeout(5); s.connect(('127.0.0.1',8000)); s.close()" \
             &>/dev/null || [ "${RETRIES}" -eq 0 ]; do
         printf "."
         sleep 3
@@ -236,8 +297,8 @@ online_up() {
     echo ""
     echo "  App Store  : https://{IP_ADDRESS}"
     echo "  Admin      : https://{IP_ADDRESS}/admin/"
-    echo "  File Srv   : http://{IP_ADDRESS}:8080/apps/"
-    echo "  Nextcloud  : http://{IP_ADDRESS}:8081  (installing — wait ~60s on first boot)"
+    echo "  File Srv   : http://{IP_ADDRESS}:8082/apps/"
+    echo "  Nextcloud  : http://{IP_ADDRESS}:8083  (installing — wait ~60s on first boot)"
     echo "  RustFS UI  : http://{IP_ADDRESS}:9001"
     echo ""
     info "Next step: wait for Nextcloud to finish installing, then run:"
@@ -293,7 +354,7 @@ online_setup_nextcloud() {
     separator
     info "Nextcloud is connected to the local App Store."
     echo ""
-    echo "  Nextcloud   : http://localhost:8081"
+    echo "  Nextcloud   : http://localhost:8083"
     echo "  App Store   : https://localhost"
     echo ""
     info "Next: sync app metadata"
@@ -433,7 +494,7 @@ online_test() {
     _check "App Store API v1 returns JSON" \
         "curl -kfs https://localhost/api/v1/ | grep -q '\['"
     _check "Fileserver /apps/ accessible" \
-        "curl -fs http://localhost:8080/apps/"
+        "curl -fs http://localhost:8082/apps/"
 
     echo ""
     echo "Results: ${pass} passed, ${fail} failed"
@@ -506,7 +567,8 @@ package_build() {
 
     # ── 3. Export database ────────────────────────────────────────────────────
     info "[3] Exporting database..."
-    if docker compose -f "${PROJECT_DIR}/docker-compose.yml" ps postgres \
+    # shellcheck disable=SC2046
+    if docker compose $(_compose_files) ps postgres \
             2>/dev/null | grep -q "Up"; then
         bash "${SCRIPT_DIR}/db/export-db.sh"
         # Copy latest dump into airgapped/exports/

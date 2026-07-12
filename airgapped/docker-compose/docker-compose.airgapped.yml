@@ -233,8 +233,9 @@ services:
       - rustfs_data:/data
     command: server /data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 15s
+      test: ["CMD-SHELL", "nc -z localhost 9000"]
+      interval: 10s
+      start_period: 15s
       timeout: 5s
       retries: 5
     networks:

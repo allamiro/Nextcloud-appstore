@@ -116,9 +116,10 @@ RUN mkdir -p /srv/static /srv/media /srv/logs /srv/config && \
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Health check
+# Health check — uWSGI uses binary uwsgi protocol on :8000, not HTTP.
+# Use a raw TCP connection to verify the worker is accepting connections.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/', timeout=5)" || exit 1
+    CMD python -c "import socket; s=socket.socket(); s.settimeout(5); s.connect(('127.0.0.1', 8000)); s.close()" || exit 1
 
 USER nextcloudappstore
 

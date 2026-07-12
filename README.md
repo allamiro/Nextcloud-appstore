@@ -11,14 +11,14 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 │                                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌────────────┐               │
 │  │  Nginx   │  │App Store │  │ PostgreSQL │  │  Nextcloud │               │
-│  │  :443    │─▶│  :8000   │─▶│  (AS DB)  │  │   :8081    │               │
+│  │  :443    │─▶│  :8000   │─▶│  (AS DB)  │  │   :8083    │               │
 │  │  :80     │  │ (uWSGI)  │  └────────────┘  └─────┬──────┘               │
 │  └──────────┘  └──────────┘                        │ uses                 │
 │                                                     ▼                      │
 │  ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌────────────┐               │
 │  │FileServer│  │  RustFS  │  │ PostgreSQL │  │  Nextcloud │               │
-│  │  :8080   │  │:9000(S3) │  │  (NC DB)  │  │  Config    │               │
-│  │  :8443   │  │:9001(UI) │  └────────────┘  │  via occ   │               │
+│  │  :8082   │  │:9000(S3) │  │  (NC DB)  │  │  Config    │               │
+│  │  :8444   │  │:9001(UI) │  └────────────┘  │  via occ   │               │
 │  └──────────┘  └──────────┘                  └────────────┘               │
 │                                                                              │
 │  Workflow: sync → allowlist → mirror → export bundle → upload to RustFS     │
@@ -31,7 +31,7 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 │                                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌────────────┐               │
 │  │  Nginx   │  │App Store │  │ PostgreSQL │  │  Nextcloud │               │
-│  │DC::443   │─▶│  :8000   │─▶│  (AS DB)  │  │ DC::8081   │               │
+│  │DC::443   │─▶│  :8000   │─▶│  (AS DB)  │  │ DC::8083   │               │
 │  │K8s:30443 │  │ (uWSGI)  │  └────────────┘  │K8s::30082  │               │
 │  └──────────┘  └──────────┘                  └─────┬──────┘               │
 │                                                     │ uses                 │
@@ -59,7 +59,7 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 | PostgreSQL | 5432 | {IP_ADDRESS}:5432 | Database |
 | App Store | 8000 | http://{IP_ADDRESS}:8000 | Django API/UI |
 | Nginx Proxy | 80/443 | https://{IP_ADDRESS} | SSL Proxy |
-| File Server | 8080/8443 | http://{IP_ADDRESS}:8080/apps/ | App Archives |
+| File Server | 8082/8444 | http://{IP_ADDRESS}:8082/apps/ | App Archives |
 
 ### Kubernetes (Air-Gapped)
 

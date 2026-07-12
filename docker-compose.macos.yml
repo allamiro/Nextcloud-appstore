@@ -1,0 +1,39 @@
+# =============================================================================
+# macOS bind-mount workaround overlay
+# =============================================================================
+# Docker Desktop on macOS blocks bind mounts from ~/Desktop (and other special
+# folders) due to macOS Privacy / TCC restrictions.
+#
+# This overlay is automatically applied by appstorectl.sh when running on macOS.
+# It redirects all host bind mounts to ~/.appstore-runtime/, which is staged
+# from the project directory before each `online up`.
+#
+# Do NOT apply this file manually — appstorectl.sh handles it.
+# =============================================================================
+
+services:
+
+  appstore:
+    volumes:
+      - ${HOME}/.appstore-runtime/config:/srv/config:ro
+      - static_files:/srv/static
+      - media_files:/srv/media
+      - logs:/srv/logs
+
+  nginx:
+    volumes:
+      - ${HOME}/.appstore-runtime/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${HOME}/.appstore-runtime/nginx/ssl:/etc/nginx/ssl:ro
+      - static_files:/srv/static:ro
+      - media_files:/srv/media:ro
+
+  fileserver:
+    volumes:
+      - ${HOME}/.appstore-runtime/fileserver/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${HOME}/.appstore-runtime/nginx/ssl:/etc/nginx/ssl:ro
+      - ${HOME}/.appstore-runtime/exports/app-archives/files:/srv/apps:ro
+
+  nextcloud:
+    volumes:
+      - nc_data:/var/www/html
+      - ${HOME}/.appstore-runtime/k8s/certs:/tmp/appstore-certs:ro
