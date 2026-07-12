@@ -47,6 +47,7 @@ spec:
         app: nextcloud-test
         app.kubernetes.io/name: nextcloud-appstore
         app.kubernetes.io/component: nextcloud-test
+        zarf.dev/agent: skip
     spec:
       containers:
         - name: nextcloud

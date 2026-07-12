@@ -61,6 +61,7 @@ spec:
         app: postgres-nc
         app.kubernetes.io/name: nextcloud-appstore
         app.kubernetes.io/component: database-nc
+        zarf.dev/agent: skip
     spec:
       containers:
         - name: postgres

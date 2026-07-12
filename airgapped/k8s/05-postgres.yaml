@@ -24,6 +24,7 @@ spec:
         app: postgres
         app.kubernetes.io/name: nextcloud-appstore
         app.kubernetes.io/component: database
+        zarf.dev/agent: skip
     spec:
       containers:
         - name: postgres

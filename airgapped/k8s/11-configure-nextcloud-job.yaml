@@ -73,6 +73,9 @@ spec:
   backoffLimit: 2
   activeDeadlineSeconds: 120
   template:
+    metadata:
+      labels:
+        zarf.dev/agent: skip
     spec:
       serviceAccountName: default
       restartPolicy: OnFailure

@@ -64,6 +64,7 @@ spec:
         app: nextcloud
         app.kubernetes.io/name: nextcloud-appstore
         app.kubernetes.io/component: nextcloud
+        zarf.dev/agent: skip
     spec:
       initContainers:
         - name: wait-for-postgres-nc

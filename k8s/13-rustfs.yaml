@@ -67,6 +67,7 @@ spec:
         app: rustfs
         app.kubernetes.io/name: nextcloud-appstore
         app.kubernetes.io/component: rustfs
+        zarf.dev/agent: skip
     spec:
       containers:
         - name: rustfs

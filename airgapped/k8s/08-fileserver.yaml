@@ -107,6 +107,7 @@ spec:
         app: fileserver
         app.kubernetes.io/name: nextcloud-appstore
         app.kubernetes.io/component: fileserver
+        zarf.dev/agent: skip
     spec:
       containers:
         - name: nginx

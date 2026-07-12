@@ -164,6 +164,7 @@ spec:
         app: nginx
         app.kubernetes.io/name: nextcloud-appstore
         app.kubernetes.io/component: proxy
+        zarf.dev/agent: skip
     spec:
       containers:
         - name: nginx

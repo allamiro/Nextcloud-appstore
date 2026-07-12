@@ -23,6 +23,9 @@ spec:
       backoffLimit: 3
       activeDeadlineSeconds: 600
       template:
+        metadata:
+          labels:
+            zarf.dev/agent: skip
         spec:
           restartPolicy: OnFailure
           securityContext:
@@ -66,6 +69,10 @@ spec:
   backoffLimit: 3
   activeDeadlineSeconds: 600
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: setup
+        zarf.dev/agent: skip
     spec:
       restartPolicy: OnFailure
       securityContext:

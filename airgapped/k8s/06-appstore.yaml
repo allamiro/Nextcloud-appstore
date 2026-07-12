@@ -28,6 +28,7 @@ spec:
         app: appstore
         app.kubernetes.io/name: nextcloud-appstore
         app.kubernetes.io/component: application
+        zarf.dev/agent: skip
     spec:
       securityContext:
         runAsUser: 1001

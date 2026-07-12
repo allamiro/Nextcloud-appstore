@@ -21,6 +21,9 @@ spec:
   backoffLimit: 3
   activeDeadlineSeconds: 120
   template:
+    metadata:
+      labels:
+        zarf.dev/agent: skip
     spec:
       restartPolicy: OnFailure
       initContainers:
