@@ -58,15 +58,18 @@ All commands below assume you are in the repository root and have copied `.env.e
 
 ### 3. Configure Existing Nextcloud
 
-```bash
-# Docker Compose Nextcloud
-./scripts/appstorectl.sh airgap configure-nextcloud external-compose
+The runtime is selected via the `NEXTCLOUD_RUNTIME` environment variable
+(`compose` | `k8s` | `ssh`). The default is `compose`.
 
-# Kubernetes Nextcloud
-./scripts/appstorectl.sh airgap configure-nextcloud external-k8s
+```bash
+# Docker Compose Nextcloud (default)
+NEXTCLOUD_RUNTIME=compose ./scripts/appstorectl.sh airgap configure-nextcloud
+
+# Kubernetes Nextcloud (same cluster)
+NEXTCLOUD_RUNTIME=k8s ./scripts/appstorectl.sh airgap configure-nextcloud
 
 # SSH / bare-metal Nextcloud
-./scripts/appstorectl.sh airgap configure-nextcloud external-ssh
+NEXTCLOUD_RUNTIME=ssh ./scripts/appstorectl.sh airgap configure-nextcloud
 ```
 
 ### 4. Validate
@@ -81,10 +84,12 @@ All commands below assume you are in the repository root and have copied `.env.e
 
 | Service | Docker Compose | Kubernetes NodePort |
 |---------|---------------|---------------------|
-| App Store HTTPS | https://localhost:30443 | https://localhost:30443 |
-| App Store Admin | https://localhost:30443/admin/ | https://localhost:30443/admin/ |
-| File Server HTTPS | https://localhost:30444/apps/ | https://localhost:30444/apps/ |
-| Test Nextcloud | http://localhost:8081 | http://localhost:30081 |
+| App Store HTTPS | https://localhost:443 | https://`<NODE_IP>`:30443 |
+| App Store Admin | https://localhost:443/admin/ | https://`<NODE_IP>`:30443/admin/ |
+| File Server HTTPS | https://localhost:8444/apps/ | https://`<NODE_IP>`:30444/apps/ |
+| Test Nextcloud | http://localhost:8081 | http://`<NODE_IP>`:30082 |
+
+Replace `<NODE_IP>` with any Kubernetes node's IP address (`kubectl get nodes -o wide`).
 
 ## Optional: Managed Test Nextcloud
 

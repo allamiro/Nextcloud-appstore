@@ -824,20 +824,20 @@ docker restart appstore-nginx
 ### Check certificate expiry
 
 ```bash
-openssl x509 -in k8s/certs/appstore.crt -noout -dates
+openssl x509 -in k8s/certs/server.crt -noout -dates
 ```
 
 ### Check certificate covers your hostname
 
 ```bash
-openssl x509 -in k8s/certs/appstore.crt -noout -text \
+openssl x509 -in k8s/certs/server.crt -noout -text \
     | grep -A3 "Subject Alternative"
 ```
 
 If the certificate doesn't cover the hostname, regenerate it:
 
 ```bash
-APPSTORE_DOMAIN=appstore.yourdomain.local bash k8s/generate-certs.sh
+SERVER_CN=appstore.yourdomain.local bash k8s/generate-certs.sh
 ```
 
 ### Manually trust the CA in Nextcloud
@@ -948,7 +948,7 @@ docker compose logs nginx --tail 50
 
 # Check if TLS certs exist (nginx will fail without them)
 ls -la k8s/certs/
-# Must have: root-ca.crt, appstore.crt, appstore.key
+# Must have: root-ca.crt, server.crt, server.key
 
 # If certs are missing, generate them
 bash k8s/generate-certs.sh

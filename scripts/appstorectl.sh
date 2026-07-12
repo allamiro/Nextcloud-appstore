@@ -175,11 +175,14 @@ AIRGAP (no internet required) — first-time workflow:
       Deploy the full stack: Nextcloud + App Store + databases + nginx + fileserver.
       Imports the App Store database from the bundle on first run.
 
-  airgap deploy k8s
-      Deploy the full stack on Kubernetes using pre-loaded images.
+  airgap deploy k8s [--appstore-only|--full-stack]
+      Deploy the App Store on Kubernetes using pre-loaded images.
+      --appstore-only  (default) Deploy only postgres, appstore, nginx, fileserver.
+      --full-stack     Also deploy Nextcloud, its postgres, RustFS, and configure job.
 
   airgap configure-nextcloud
-      Connect the deployed Nextcloud instance to the local App Store.
+      Connect an existing Nextcloud instance to the local App Store.
+      Runtime is selected by NEXTCLOUD_RUNTIME (compose | k8s | ssh; default: compose).
       Installs CA cert, sets appstoreurl, tests connectivity, rolls back on failure.
 
   airgap test compose
@@ -742,9 +745,10 @@ airgap_load_images() {
 
 airgap_deploy() {
     local target="${1:-}"
+    shift || true
     case "${target}" in
-        compose) bash "${AIRGAP_DIR}/scripts/deploy-compose-airgap.sh" ;;
-        k8s)     bash "${AIRGAP_DIR}/scripts/deploy-k8s-airgap.sh" ;;
+        compose) bash "${AIRGAP_DIR}/scripts/deploy-compose-airgap.sh" "$@" ;;
+        k8s)     bash "${AIRGAP_DIR}/scripts/deploy-k8s-airgap.sh" "$@" ;;
         *)
             error "Unknown deploy target '${target}'. Use: compose | k8s"
             ;;

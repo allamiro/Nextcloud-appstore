@@ -251,43 +251,52 @@ ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=your_secure_admin_password
 ```
 
-> **⚠️ Important:** Do not use `$` characters in `SECRET_KEY` or passwords as docker-compose interprets them as variables.
+> **⚠️ Important:** Do not use `$` characters in `SECRET_KEY` or passwords — Docker Compose interprets them as variable substitution.
 
-### Step 2: Generate SSL Certificates (for staging)
+### Step 2: Generate TLS Certificates
+
+The stack uses a 3-tier CA chain (Root CA → Intermediate CA → Server cert). Generate
+all certificates with the provided script. Set `SERVER_CN` to the IP address or hostname
+that Nextcloud will use to reach the App Store.
 
 ```bash
-# Create self-signed certificates for staging
-mkdir -p nginx/ssl
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-    -keyout nginx/ssl/server.key \
-    -out nginx/ssl/server.crt \
-    -subj "/CN=appstore.example.com"
+# Replace with your host's LAN IP or a DNS name
+SERVER_CN=192.168.1.100 bash k8s/generate-certs.sh
 ```
 
-### Step 3: Build the Docker Image
+This creates `k8s/certs/server.crt`, `k8s/certs/server.key`, and `k8s/certs/root-ca.crt`,
+and copies the cert chain into `nginx/ssl/` automatically.
 
+To trust the root CA on your workstation (so your browser accepts the App Store):
 ```bash
-# Build the App Store image
-docker-compose build appstore
+# macOS
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \
+    k8s/certs/root-ca.crt
 
-# Verify the image was created
-docker images | grep nextcloudappstore
+# Linux (Debian/Ubuntu)
+sudo cp k8s/certs/root-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt \
+    && sudo update-ca-certificates
 ```
 
-### Step 4: Start the Staging Environment
+### Step 3: Start the Full Stack
+
+Use `appstorectl.sh` — it handles macOS Docker Desktop bind-mount restrictions
+automatically by staging configs to `~/.appstore-runtime/` before starting containers.
 
 ```bash
-# Start the full stack with initial setup flags
-# This will:
-#   - Create database and run migrations
-#   - Load initial fixtures (categories, etc.)
-#   - Import translations
-#   - Create admin user (from .env credentials)
-#   - Configure GitHub OAuth (if credentials provided)
-LOAD_FIXTURES=true IMPORT_TRANSLATIONS=true docker-compose up -d
+# Builds the App Store image and starts all services
+./scripts/appstorectl.sh online up
 
 # View startup logs (wait for "Starting application server...")
-docker-compose logs -f appstore
+docker compose logs -f appstore
+```
+
+### Step 4: Connect Nextcloud to the App Store
+
+Wait ~60 seconds for Nextcloud to finish its first-boot installation, then:
+
+```bash
+./scripts/appstorectl.sh online setup-nextcloud
 ```
 
 The admin user is created automatically using credentials from `.env`:
@@ -295,76 +304,61 @@ The admin user is created automatically using credentials from `.env`:
 - `ADMIN_EMAIL`  
 - `ADMIN_PASSWORD`
 
-### Step 5: Sync Nextcloud Releases (Requires Internet)
+### Step 5: Sync App Metadata (Requires Internet)
+
+This step is handled automatically by `appstorectl.sh online sync` — it runs both
+the app metadata sync and the Nextcloud releases sync in one command:
 
 ```bash
-# Preview releases that will be synced
-docker-compose exec appstore python manage.py syncnextcloudreleases \
-    --oldest-supported="25.0.0" --print
-
-# Sync releases from GitHub (requires GITHUB_API_TOKEN in .env)
-docker-compose exec appstore python manage.py syncnextcloudreleases \
-    --oldest-supported="25.0.0"
+./scripts/appstorectl.sh online sync
 ```
 
-This syncs Nextcloud server releases (v25.0.0 to latest), which apps use to declare compatibility.
-
-### Step 6: Import Apps from Official App Store (Requires Internet)
-
-**This is the key step for air-gapped deployment** - it imports all apps from the official Nextcloud App Store into your local instance.
-
+To sync a limited set for testing:
 ```bash
-# Test with a small batch first
-./scripts/sync-apps.sh --limit 10
-
-# Import ALL apps (takes several minutes)
-./scripts/sync-apps.sh
+./scripts/appstorectl.sh online sync --limit 10
 ```
-
-This fetches all apps and their releases from `https://apps.nextcloud.com` and imports them into your local database.
 
 **What gets imported:**
-
 - App metadata (name, summary, description, categories)
-- All release versions with download URLs and signatures
-- Platform compatibility information
-- Screenshots (images hosted on GitHub)
-- Documentation links
+- All release versions with download URLs, signatures, and platform specs
+- English translations and screenshots
+- Nextcloud server releases (NC version → channel mapping for the releases grid)
 
 **Expected output:**
-
-```text
+```
 Sync complete!
-New apps imported: 342
-Translations added: 342
-Screenshots added: 661
-Total apps: 566
-Total releases: 14031
+New apps imported: 312
+Translations added: 312
+Screenshots added: 1847
+Total apps: 312
+Total releases: 4821
+[OK] Nextcloud releases synced.
 ```
 
-> **Note:** The sync imports apps compatible with Nextcloud 30.x. Apps for older NC versions are also imported from the general API but may have fewer details.
+> To change which platform versions are fetched, set
+> `APPSTORE_SYNC_PLATFORMS=30.0.0,31.0.0,33.0.0` in `.env` before running sync.
 
-### Step 7: Configure GitHub Social Login (Optional)
+### Step 6: Configure GitHub Social Login (Optional)
 
 If you provided `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` in `.env`, GitHub login is configured automatically.
 
 To configure manually or update:
 
 ```bash
-docker-compose exec appstore python manage.py setupsocial \
+docker compose exec appstore python manage.py setupsocial \
     --github-client-id "YOUR_CLIENT_ID" \
     --github-secret "YOUR_CLIENT_SECRET" \
     --domain appstore.example.com
 ```
 
-### Step 8: Verify Staging Environment
+### Step 7: Verify Staging Environment
 
 ```bash
 # Check container status
-docker-compose ps
+docker compose ps
 
 # View logs
-docker-compose logs appstore
+docker compose logs appstore
 ```
 
 **Access URLs:**
@@ -692,7 +686,7 @@ kubectl logs -f deployment/appstore -n nextcloud-appstore
 git pull origin main
 
 # Rebuild image with new version
-docker-compose build appstore
+docker compose build appstore
 
 # Re-export images and transfer to production
 sh scripts/build-and-export.sh
