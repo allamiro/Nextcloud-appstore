@@ -99,16 +99,14 @@ spec:
             - name: data
               mountPath: /data
           livenessProbe:
-            httpGet:
-              path: /minio/health/live
+            tcpSocket:
               port: 9000
             initialDelaySeconds: 30
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
-            httpGet:
-              path: /minio/health/live
+            tcpSocket:
               port: 9000
             initialDelaySeconds: 10
             periodSeconds: 10

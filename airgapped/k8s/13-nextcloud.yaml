@@ -124,16 +124,14 @@ spec:
               mountPath: /tmp/appstore-certs
               readOnly: true
           livenessProbe:
-            httpGet:
-              path: /status.php
+            tcpSocket:
               port: 80
             initialDelaySeconds: 90
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
           readinessProbe:
-            httpGet:
-              path: /status.php
+            tcpSocket:
               port: 80
             initialDelaySeconds: 30
             periodSeconds: 10

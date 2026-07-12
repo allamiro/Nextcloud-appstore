@@ -75,16 +75,14 @@ spec:
             - name: nextcloud-data
               mountPath: /var/www/html
           livenessProbe:
-            httpGet:
-              path: /status.php
+            tcpSocket:
               port: 80
             initialDelaySeconds: 60
             periodSeconds: 15
             timeoutSeconds: 5
             failureThreshold: 5
           readinessProbe:
-            httpGet:
-              path: /status.php
+            tcpSocket:
               port: 80
             initialDelaySeconds: 30
             periodSeconds: 10
