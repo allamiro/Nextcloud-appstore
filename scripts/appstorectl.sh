@@ -97,6 +97,9 @@ ONLINE (internet required) — first-time workflow:
   online export-db
       Export the App Store PostgreSQL database to exports/.
 
+  online backup-rustfs <db|apps|bundle|all|ls [bucket]>
+      Upload backups and bundles to the RustFS object store.
+
   online test
       Validate the staging deployment is healthy.
 
@@ -151,6 +154,7 @@ cmd_online() {
         apps)              online_apps "$@" ;;
         export)            online_export "$@" ;;
         export-db)         online_export_db ;;
+        backup-rustfs)     online_backup_rustfs "$@" ;;
         test)              online_test ;;
         *)
             echo "Unknown online action: '${action}'"
@@ -360,6 +364,13 @@ online_export() {
     separator
     require_running_appstore
     bash "${SCRIPT_DIR}/export-bundle.sh" "$@"
+
+    # Auto-upload bundle + metadata to RustFS when enabled
+    if [ "${USE_RUSTFS:-false}" = "true" ]; then
+        echo ""
+        info "USE_RUSTFS=true — uploading bundle to RustFS..."
+        bash "${SCRIPT_DIR}/backup-to-rustfs.sh" bundle
+    fi
 }
 
 online_export_db() {
@@ -368,6 +379,20 @@ online_export_db() {
     separator
     require_running_appstore
     bash "${SCRIPT_DIR}/db/export-db.sh"
+
+    # Auto-upload DB dump to RustFS when enabled
+    if [ "${USE_RUSTFS:-false}" = "true" ]; then
+        echo ""
+        info "USE_RUSTFS=true — uploading DB dump to RustFS..."
+        bash "${SCRIPT_DIR}/backup-to-rustfs.sh" db
+    fi
+}
+
+online_backup_rustfs() {
+    separator
+    info "Uploading to RustFS object store"
+    separator
+    bash "${SCRIPT_DIR}/backup-to-rustfs.sh" "$@"
 }
 
 online_test() {
@@ -446,8 +471,8 @@ package_build() {
         -f "${PROJECT_DIR}/Dockerfile" \
         "${PROJECT_DIR}"
 
-    # ── 2. Save images (Nextcloud always included — required for air-gapped NC) ─
-    local images=("nextcloudappstore:latest" "postgres:15-alpine" "nginx:alpine" "nextcloud:stable-apache")
+    # ── 2. Save images (Nextcloud + RustFS always included for air-gapped stack) ─
+    local images=("nextcloudappstore:latest" "postgres:15-alpine" "nginx:alpine" "nextcloud:stable-apache" "rustfs/rustfs:latest" "minio/mc:latest")
 
     for img in "${images[@]}"; do
         local safe_name

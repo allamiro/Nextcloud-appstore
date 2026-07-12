@@ -184,6 +184,24 @@ EOF
 echo "  ✓ Kubernetes secret created: ${SCRIPT_DIR}/09-tls-secret.yaml"
 
 # =============================================================================
+# Copy certs to nginx/ssl/ so Docker Compose nginx can pick them up.
+# Uses server-chain.crt (server + intermediate + root) as the TLS certificate
+# so clients can validate the full chain without needing the CA pre-installed.
+# =============================================================================
+NGINX_SSL_DIR="${SCRIPT_DIR}/../nginx/ssl"
+mkdir -p "${NGINX_SSL_DIR}"
+
+cp "${CERTS_DIR}/server-chain.crt" "${NGINX_SSL_DIR}/server.crt"
+cp "${CERTS_DIR}/server.key"       "${NGINX_SSL_DIR}/server.key"
+cp "${CERTS_DIR}/root-ca.crt"      "${NGINX_SSL_DIR}/root-ca.crt"
+
+echo ""
+echo "[AUTO] Certs copied to nginx/ssl/ for Docker Compose:"
+echo "  server.crt  ← server-chain.crt (full chain)"
+echo "  server.key  ← server.key"
+echo "  root-ca.crt ← root-ca.crt"
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo ""
@@ -191,20 +209,31 @@ echo "=============================================="
 echo "Certificate Generation Complete!"
 echo "=============================================="
 echo ""
-echo "Generated files in ${CERTS_DIR}:"
-echo "  - root-ca.crt / root-ca.key       (Root CA)"
-echo "  - intermediate-ca.crt / .key      (Intermediate CA)"
-echo "  - server.crt / server.key         (Server certificate)"
-echo "  - server-chain.crt                (Full chain for Nginx)"
-echo "  - ca-chain.crt                    (CA chain for verification)"
+echo "Source files: ${CERTS_DIR}/"
+echo "  root-ca.crt / root-ca.key       — Root CA  (10 yr)"
+echo "  intermediate-ca.crt / .key      — Intermediate CA  (5 yr)"
+echo "  server.crt / server.key         — Server cert  (1 yr)"
+echo "  server-chain.crt                — Full chain for nginx"
+echo "  ca-chain.crt                    — CA chain for client verification"
+echo ""
+echo "Copied to: ${NGINX_SSL_DIR}/"
+echo "  server.crt  server.key  root-ca.crt"
 echo ""
 echo "Kubernetes manifest:"
-echo "  - ${SCRIPT_DIR}/09-tls-secret.yaml"
+echo "  ${SCRIPT_DIR}/09-tls-secret.yaml"
 echo ""
-echo "To apply the TLS secret:"
-echo "  kubectl apply -f ${SCRIPT_DIR}/09-tls-secret.yaml"
+echo "To regenerate with a specific IP or hostname:"
+echo "  SERVER_CN=192.168.178.165 \\"
+echo "  SERVER_ALT_NAMES='IP:192.168.178.165,DNS:localhost,DNS:appstore.local' \\"
+echo "  bash k8s/generate-certs.sh"
 echo ""
-echo "To trust the CA on your local machine (macOS):"
-echo "  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ${CERTS_DIR}/root-ca.crt"
+echo "To trust the Root CA on macOS (so browser shows green lock):"
+echo "  sudo security add-trusted-cert -d -r trustRoot \\"
+echo "    -k /Library/Keychains/System.keychain ${CERTS_DIR}/root-ca.crt"
 echo ""
+echo "To trust the Root CA on Linux:"
+echo "  sudo cp ${CERTS_DIR}/root-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt"
+echo "  sudo update-ca-certificates"
+echo ""
+echo "Server cert expires in: 365 days. Regenerate before expiry."
 echo "=============================================="

@@ -6,6 +6,7 @@
 #   - App Store (with its own PostgreSQL)
 #   - Nginx reverse proxy (TLS termination)
 #   - File server (serves mirrored app archives over HTTPS)
+#   - RustFS S3-compatible object store (backups, archives, bundles)
 #
 # First-time workflow:
 #   1. cp .env.example .env && $EDITOR .env   (set passwords, domains, NC version)
@@ -178,6 +179,59 @@ services:
     networks:
       - appstore-network
 
+  # ---------------------------------------------------------------------------
+  # RustFS — S3-compatible object storage
+  # Stores DB backups, export bundles, and app archives.
+  # API  : http://localhost:9000  (S3-compatible endpoint)
+  # UI   : http://localhost:9001  (web console)
+  # ---------------------------------------------------------------------------
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: appstore-rustfs
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-ChangeThisPassword}
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_NOTIFY_ENABLE: "${RUSTFS_NOTIFY_ENABLE:-false}"
+    volumes:
+      - rustfs_data:/data
+    command: server /data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - appstore-network
+
+  # ---------------------------------------------------------------------------
+  # RustFS bucket initialiser (runs once, creates required buckets)
+  # Uses minio/mc which speaks the same S3 API as RustFS.
+  # ---------------------------------------------------------------------------
+  rustfs-init:
+    image: minio/mc:latest
+    container_name: appstore-rustfs-init
+    restart: "no"
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      MC_HOST_appstore: "http://${RUSTFS_ACCESS_KEY:-rustfsadmin}:${RUSTFS_SECRET_KEY:-ChangeThisPassword}@rustfs:9000"
+    entrypoint: >
+      /bin/sh -c "
+        mc mb --ignore-existing appstore/app-archives &&
+        mc mb --ignore-existing appstore/backups &&
+        mc mb --ignore-existing appstore/bundles &&
+        mc anonymous set download appstore/app-archives &&
+        echo 'RustFS buckets ready: app-archives (public), backups, bundles'
+      "
+    networks:
+      - appstore-network
+
 volumes:
   postgres_data:
   postgres_nc_data:
@@ -185,6 +239,7 @@ volumes:
   static_files:
   media_files:
   logs:
+  rustfs_data:
 
 networks:
   appstore-network:
