@@ -46,10 +46,10 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 
 | Service | Port | URL | Purpose |
 |---------|------|-----|---------|
-| PostgreSQL | 5432 | localhost:5432 | Database |
-| App Store | 8000 | http://localhost:8000 | Django API/UI |
-| Nginx Proxy | 80/443 | https://localhost | SSL Proxy |
-| File Server | 8080/8443 | http://localhost:8080/apps/ | App Archives |
+| PostgreSQL | 5432 | {IP_ADDRESS}:5432 | Database |
+| App Store | 8000 | http://{IP_ADDRESS}:8000 | Django API/UI |
+| Nginx Proxy | 80/443 | https://{IP_ADDRESS} | SSL Proxy |
+| File Server | 8080/8443 | http://{IP_ADDRESS}:8080/apps/ | App Archives |
 
 ### Kubernetes (Air-Gapped)
 
@@ -57,8 +57,8 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 |---------|------|----------|-----|---------|
 | postgres-service | 5432 | - | ClusterIP | Database |
 | appstore-service | 8000 | - | ClusterIP | Django Backend |
-| nginx-service | 80/443 | 30080/30443 | https://localhost:30443 | App Store UI/API |
-| fileserver-service | 80/443 | 30081/30444 | https://localhost:30444/apps/ | App Archives |
+| nginx-service | 80/443 | 30080/30443 | https://{IP_ADDRESS}:30443 | App Store UI/API |
+| fileserver-service | 80/443 | 30081/30444 | https://{IP_ADDRESS}:30444/apps/ | App Archives |
 
 ## Directory Structure
 
