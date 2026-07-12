@@ -121,13 +121,21 @@ fi
 if [ "${RUN_TEST}" = "true" ]; then
     info "Testing connectivity from Nextcloud container to App Store API..."
 
+    # Derive the base URL for the connectivity probe (strip the /api/v1 path).
+    # We test the App Store root (/apps/ or /) which returns 200 — the /api/v1/
+    # root returns 404 (no root view) and /api/v1/apps/ returns 401 (auth
+    # required). A 200 or 401 both prove TLS+TCP connectivity is working.
+    BASE_HOST="${APPSTORE_API_URL%%/api/v1*}"
+
     # curl may not be available in all NC images; fall back to wget or PHP
     if docker exec "${NC_CONTAINER}" which curl &>/dev/null; then
-        TEST_CMD="curl -fsS --max-time 10 --connect-timeout 5 '${APPSTORE_API_URL}/'"
+        # Accept 200/301/401 as "server is reachable"; conn errors or 5xx are failures.
+        # Test the API apps endpoint which returns 401 (auth required) when the server is up.
+        TEST_CMD="HTTP=\$(curl -sS --max-time 10 --connect-timeout 5 -o /dev/null -w '%{http_code}' '${APPSTORE_API_URL}/apps/'); [ \"\$HTTP\" = '200' ] || [ \"\$HTTP\" = '301' ] || [ \"\$HTTP\" = '401' ]"
     elif docker exec "${NC_CONTAINER}" which wget &>/dev/null; then
-        TEST_CMD="wget -qO- --timeout=10 '${APPSTORE_API_URL}/'"
+        TEST_CMD="wget -qO- --timeout=10 '${BASE_HOST}/apps/' || wget -qO- --timeout=10 '${BASE_HOST}/'"
     else
-        TEST_CMD="php -r \"\\\$r=file_get_contents('${APPSTORE_API_URL}/'); if(\\\$r===false) exit(1);\""
+        TEST_CMD="php -r \"\\\$r=file_get_contents('${BASE_HOST}/'); if(\\\$r===false) exit(1);\""
     fi
 
     if docker exec "${NC_CONTAINER}" bash -c "${TEST_CMD}" &>/dev/null; then
@@ -139,10 +147,11 @@ if [ "${RUN_TEST}" = "true" ]; then
         echo "  1. App Store is running and reachable on your network"
         echo "  2. APPSTORE_API_URL is correct in .env (currently: ${APPSTORE_API_URL})"
         echo "  3. The CA cert is trusted inside the Nextcloud container"
-        echo "  4. DNS resolves '$(echo "${APPSTORE_API_URL}" | sed 's|https\?://||;s|/.*||')' inside the NC container"
+        _tmp="${APPSTORE_API_URL#https://}"; _tmp="${_tmp#http://}"; _host="${_tmp%%/*}"
+        echo "  4. DNS resolves '${_host}' inside the NC container"
         echo ""
         echo "  Manual check:"
-        echo "    docker exec ${NC_CONTAINER} curl -v ${APPSTORE_API_URL}/"
+        echo "    docker exec ${NC_CONTAINER} curl -v ${APPSTORE_API_URL}/apps/"
         echo ""
         rollback
     fi
