@@ -950,9 +950,25 @@ kubectl describe secret appstore-tls -n nextcloud-appstore
 
 > **If you need to regenerate certs after initial deployment** (e.g., wrong IP in SAN), regenerate on the commercial side with the correct `SERVER_ALT_NAMES`, transfer the new `09-tls-secret.yaml`, apply it, then do a rolling restart of nginx and fileserver: `kubectl rollout restart deployment/nginx deployment/fileserver -n nextcloud-appstore`.
 
-### 3.5 Update the App Store API URL in the configure-nextcloud job
+### 3.5 Update node IP in configmap and manifests before applying
 
-Before applying `11-configure-nextcloud-job.yaml`, update the `APPSTORE_API_URL` env var to point at your node IP:
+Before applying any manifests, set your node IP in two places:
+
+**3.5.1 — `airgapped/k8s/03-configmap.yaml` (ALLOWED_HOSTS)**
+
+When Nextcloud runs `occ app:install`, it fetches the app list from the App Store via the
+NodePort URL (e.g. `https://192.168.1.100:30443/api/v1`). Django receives the request with
+`Host: 192.168.1.100`, and returns `400 Bad Request` if that IP is not in `ALLOWED_HOSTS`.
+Add your node IP before applying:
+
+```yaml
+# In airgapped/k8s/03-configmap.yaml
+ALLOWED_HOSTS: "appstore.local,localhost,192.168.1.100"   # <-- add your node IP
+```
+
+**3.5.2 — `airgapped/k8s/11-configure-nextcloud-job.yaml` (APPSTORE_API_URL)**
+
+Update the `APPSTORE_API_URL` env var to point at your node IP:
 
 ```yaml
 # In airgapped/k8s/11-configure-nextcloud-job.yaml
@@ -966,6 +982,10 @@ env:
   - name: NEXTCLOUD_K8S_CONTAINER
     value: "nextcloud"                             # container name
 ```
+
+> **Note:** If you cannot pre-load `bitnami/kubectl:latest` on the cluster (it is not included
+> in the airgapped bundle), skip the configure-nextcloud Job and use the manual kubectl exec
+> commands in Phase 4 Step 10 instead. Both approaches configure the same Nextcloud settings.
 
 Also update the `NEXTCLOUD_TRUSTED_DOMAINS` env var in `airgapped/k8s/13-nextcloud.yaml` to include your node IP:
 
@@ -1156,29 +1176,75 @@ kubectl logs -f deployment/nextcloud -n nextcloud-appstore
 
 Look for lines like `Nextcloud was successfully installed` before the pod becomes ready.
 
-### Step 8 — Copy app archives to the fileserver pod
+### Step 8 — Copy app archives to the fileserver pod and update release URLs
 
-This populates the fileserver with the mirrored app packages so Nextcloud can download them without internet access.
+This populates the fileserver with mirrored app packages so Nextcloud can download them
+without internet access. It also updates the download URLs in the App Store DB to point
+at the local fileserver instead of GitHub.
 
 ```bash
-FS_POD=$(kubectl get pod -l app=fileserver -n nextcloud-appstore \
+NODE_IP="192.168.1.100"    # replace with your node IP
+NS=nextcloud-appstore
+
+FS_POD=$(kubectl get pod -l app=fileserver -n ${NS} \
     -o jsonpath='{.items[0].metadata.name}')
 echo "Fileserver pod: ${FS_POD}"
 
 # Copy all .tar.gz app archives
 kubectl cp airgapped/exports/app-archives/files/. \
-    nextcloud-appstore/${FS_POD}:/srv/apps/
+    ${NS}/${FS_POD}:/srv/apps/
 
 # Verify (directory listing should show your app archives)
-kubectl exec -n nextcloud-appstore ${FS_POD} -- ls -lh /srv/apps/
+kubectl exec -n ${NS} ${FS_POD} -- ls -lh /srv/apps/
 ```
 
 Test that the fileserver serves the files:
 
 ```bash
 # From operator workstation (replace IP)
-curl -sk https://192.168.1.100:30444/apps/ | grep -i "tar.gz" | head -5
+curl -sk https://${NODE_IP}:30444/apps/ | grep -i "tar.gz" | head -5
 ```
+
+**App archive download URL mirroring (required for true air-gap):**
+
+The App Store DB stores download URLs for each app release. After importing the DB dump,
+these URLs still point to `https://github.com/nextcloud-releases/...`. In a true air-gapped
+environment, Nextcloud cannot reach GitHub when installing apps.
+
+After copying app archives to the fileserver, update the release URLs in the DB:
+
+```bash
+POSTGRES_POD=$(kubectl get pod -l app=postgres -n ${NS} \
+    -o jsonpath='{.items[0].metadata.name}')
+
+# Update all release download URLs from github.com to local fileserver
+# The fileserver serves archives at: http://fileserver-service/apps/<filename>
+kubectl exec ${POSTGRES_POD} -n ${NS} -- bash -c "
+  PGPASSWORD=\$(cat /run/secrets/postgresql/POSTGRES_PASSWORD) \
+  psql -U nextcloudappstore nextcloudappstore -c \"
+    UPDATE nextcloudappstorerelease
+    SET download = REPLACE(
+      download,
+      'https://github.com/nextcloud-releases/',
+      'http://fileserver-service/apps/'
+    )
+    WHERE download LIKE '%github.com/nextcloud-releases/%';
+    SELECT COUNT(*) AS updated_releases FROM nextcloudappstorerelease
+    WHERE download LIKE '%fileserver-service%';
+  \"
+"
+```
+
+> **Important:** Only the archives you actually copied to the fileserver will be downloadable.
+> For a minimal deployment, download only the apps you intend to install:
+>
+> ```bash
+> # On the commercial host — find the download URL for an app
+> curl -s https://apps.nextcloud.com/api/v1/apps/spreed | python3 -m json.tool | grep download
+> # Download and copy to airgapped/exports/app-archives/files/
+> wget -O airgapped/exports/app-archives/files/spreed-v23.0.8.tar.gz \
+>     https://github.com/nextcloud-releases/spreed/releases/download/v23.0.8/spreed-v23.0.8.tar.gz
+> ```
 
 ### Step 9 — Deploy RustFS and run the bucket init job
 
@@ -1206,6 +1272,55 @@ kubectl logs job/rustfs-init -n nextcloud-appstore
 
 ### Step 10 — Configure Nextcloud to use the local App Store
 
+There are two approaches. Use **Option A (manual)** unless you have pre-loaded `bitnami/kubectl:latest`
+onto the cluster — that image is not included in the airgapped bundle.
+
+#### Option A — Manual kubectl exec (recommended for air-gapped clusters)
+
+```bash
+NS=nextcloud-appstore
+NODE_IP="192.168.1.100"    # replace with your node IP
+
+NC_POD=$(kubectl get pod -l app=nextcloud -n ${NS} \
+    -o jsonpath='{.items[0].metadata.name}')
+echo "Nextcloud pod: ${NC_POD}"
+
+# Step 1: Trust the App Store CA cert at the OS level (curl, apt, etc.)
+kubectl exec ${NC_POD} -n ${NS} -- bash -c "
+  cp /tmp/appstore-certs/root-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt
+  update-ca-certificates
+"
+
+# Step 2: Import CA cert into Nextcloud's PHP/Guzzle trust store.
+# Nextcloud uses composer/ca-bundle (Mozilla list), NOT the system CA bundle.
+# This step is REQUIRED in addition to update-ca-certificates.
+kubectl exec ${NC_POD} -n ${NS} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        security:certificates:import /tmp/appstore-certs/root-ca.crt
+
+# Step 3: Enable the App Store and set the URL
+kubectl exec ${NC_POD} -n ${NS} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        config:system:set appstoreenabled --value=true --type=boolean
+kubectl exec ${NC_POD} -n ${NS} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        config:system:set appstoreurl --value="https://${NODE_IP}:30443/api/v1"
+
+# Step 4: Allow requests to local/internal IP addresses.
+# Without this, occ app:install returns "not found on appstore" even when
+# the App Store is reachable, because Nextcloud blocks RFC-1918 address requests.
+kubectl exec ${NC_POD} -n ${NS} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        config:system:set allow_local_remote_servers --value=true --type=boolean
+
+# Verify
+kubectl exec ${NC_POD} -n ${NS} -- \
+    runuser -u www-data -- php /var/www/html/occ config:system:get appstoreurl
+# Expected: https://192.168.1.100:30443/api/v1
+```
+
+#### Option B — configure-nextcloud Job (requires bitnami/kubectl pre-loaded)
+
 Before applying, confirm `APPSTORE_API_URL` in `11-configure-nextcloud-job.yaml` is set to your node IP (done in Phase 3.5).
 
 ```bash
@@ -1218,8 +1333,6 @@ kubectl wait --for=condition=complete job/configure-nextcloud \
 kubectl logs job/configure-nextcloud -n nextcloud-appstore
 # Expected last line: "Nextcloud App Store configuration complete."
 ```
-
-The job runs `occ config:system:set appstoreenabled --value=true` and `occ config:system:set appstoreurl --value="https://192.168.1.100:30443/api/v1"` inside the Nextcloud pod.
 
 If the job fails to find the Nextcloud pod, verify:
 
@@ -1402,8 +1515,12 @@ Run through this checklist after each deployment:
 | import-db job fails: "dump not found" | `kubectl cp` step missed or wrong filename | Confirm `/tmp/appstore_db.sql.gz` exists in postgres pod; re-copy |
 | import-db job fails: auth error | PGPASSWORD doesn't match DB password | Secrets mismatch — fix `postgres-secrets.POSTGRES_PASSWORD` |
 | configure-nextcloud job fails: "No pod found" | Wrong namespace or selector | Edit `NEXTCLOUD_K8S_NAMESPACE` and `NEXTCLOUD_K8S_POD_SELECTOR` in the job YAML |
+| configure-nextcloud job stuck in `ErrImageNeverPull` | `bitnami/kubectl:latest` not pre-loaded | Use the manual kubectl exec commands in Phase 4 Step 10 Option A instead |
+| `occ app:install` returns "not found on appstore" | Node IP missing from `ALLOWED_HOSTS` | Patch the configmap: `kubectl patch configmap appstore-config -n nextcloud-appstore --type merge -p '{"data":{"ALLOWED_HOSTS":"appstore.local,localhost,<YOUR_NODE_IP>"}}'`, then `kubectl rollout restart deployment/appstore -n nextcloud-appstore` |
+| `occ app:install` returns "not found on appstore" | `allow_local_remote_servers` not set | Run: `kubectl exec <nc-pod> -n nextcloud-appstore -- runuser -u www-data -- php /var/www/html/occ config:system:set allow_local_remote_servers --value=true --type=boolean` |
+| `occ app:install` downloads from github.com | App archive URLs in DB still point to GitHub | See "App archive download URL mirroring" in Phase 4 Step 8; download archives and update release URLs in the App Store DB |
 | Nextcloud "Could not connect to App Store" | Wrong appstoreurl or TLS cert not trusted | Verify `appstoreurl` via `occ config:system:get appstoreurl`; check CA cert mount |
-| Nextcloud TLS error connecting to App Store | Self-signed CA not trusted by Nextcloud | Confirm `appstore-tls` secret has `ca.crt`; check Nextcloud mounts it at `/tmp/appstore-certs/root-ca.crt` |
+| Nextcloud TLS error connecting to App Store | Self-signed CA not trusted by Nextcloud | Confirm `appstore-tls` secret has `ca.crt`; check Nextcloud mounts it at `/tmp/appstore-certs/root-ca.crt`; run `occ security:certificates:import` (system `update-ca-certificates` alone is insufficient — Nextcloud uses composer/ca-bundle, not the system CA store) |
 | RustFS starts but buckets missing | rustfs-init job not run or failed | Re-apply `15-rustfs-init-job.yaml` (delete old job first) |
 | rustfs-init job: "connection refused" | RustFS pod not ready | Wait for RustFS readiness, then re-apply init job |
 | Fileserver shows empty `/apps/` | App archives not copied | Re-run Phase 4 Step 8 `kubectl cp` |
@@ -1635,8 +1752,25 @@ kubectl apply -f airgapped/k8s/15-rustfs-init-job.yaml
 kubectl wait --for=condition=complete job/rustfs-init -n ${NS} --timeout=120s
 
 echo "=== Phase 4 Step 10: Configure Nextcloud to use local App Store ==="
-kubectl apply -f airgapped/k8s/11-configure-nextcloud-job.yaml
-kubectl wait --for=condition=complete job/configure-nextcloud -n ${NS} --timeout=120s
+# Manual approach (works without bitnami/kubectl pre-loaded)
+NC_POD=$(kubectl get pod -l app=nextcloud -n ${NS} -o jsonpath='{.items[0].metadata.name}')
+kubectl exec ${NC_POD} -n ${NS} -- bash -c "
+  cp /tmp/appstore-certs/root-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt
+  update-ca-certificates
+"
+kubectl exec ${NC_POD} -n ${NS} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        security:certificates:import /tmp/appstore-certs/root-ca.crt
+kubectl exec ${NC_POD} -n ${NS} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        config:system:set appstoreenabled --value=true --type=boolean
+kubectl exec ${NC_POD} -n ${NS} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        config:system:set appstoreurl --value="https://${NODE_IP}:30443/api/v1"
+kubectl exec ${NC_POD} -n ${NS} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        config:system:set allow_local_remote_servers --value=true --type=boolean
+echo "NC App Store URL: $(kubectl exec ${NC_POD} -n ${NS} -- runuser -u www-data -- php /var/www/html/occ config:system:get appstoreurl)"
 
 echo "=== Phase 4 Step 11: Final pod status ==="
 kubectl get pods -n ${NS}
@@ -2140,47 +2274,73 @@ kubectl wait --for=condition=complete job/configure-nextcloud \
 kubectl logs -n ${NS} job/configure-nextcloud
 ```
 
-#### B.4 — Set `allow_local_remote_servers` on Your Existing NC
+#### B.4 — Configure Your Existing Nextcloud
 
-The configure job above sets `appstoreurl` and `appstoreenabled` but does **not** set
-`allow_local_remote_servers`. You must set it manually, otherwise `occ app:install` fails
-with *"Host violates local access rules"*.
+The configure job (B.3) sets `appstoreurl`, `appstoreenabled`, `allow_local_remote_servers`,
+and imports the CA cert. If you ran the job, skip to B.6.
+
+If the configure job could not run (e.g., `bitnami/kubectl` not available), run these steps
+manually. The CA cert must be accessible inside the NC pod — either copy it in, or mount it
+from the `appstore-tls` secret if your NC deployment is in the same cluster.
 
 ```bash
-NC_NS=nextcloud
+NC_NS=nextcloud-appstore      # namespace where your NC runs
 NC_SELECTOR="app=nextcloud"
 NC_CONTAINER="nextcloud"
+NODE_IP="{IP_ADDRESS}"         # your App Store node IP
 
 NC_POD=$(kubectl get pod -l "${NC_SELECTOR}" -n ${NC_NS} \
     -o jsonpath='{.items[0].metadata.name}')
 
+# Step 1: System CA trust
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- bash -c "
+  cp /tmp/appstore-certs/root-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt
+  update-ca-certificates
+"
+
+# Step 2: Nextcloud/Guzzle CA trust (required separately — system CA bundle not used by NC)
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    runuser -u www-data -- php occ config:system:set allow_local_remote_servers \
-    --value=true --type=boolean
+    runuser -u www-data -- php /var/www/html/occ security:certificates:import \
+    /tmp/appstore-certs/root-ca.crt
+
+# Step 3: Enable App Store and set URL
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        config:system:set appstoreenabled --value=true --type=boolean
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        config:system:set appstoreurl --value="https://${NODE_IP}:30443/api/v1"
+
+# Step 4: Allow requests to internal/private IP addresses
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    runuser -u www-data -- php /var/www/html/occ \
+        config:system:set allow_local_remote_servers --value=true --type=boolean
 ```
 
-#### B.5 — Install the CA Cert Inside Your Existing NC Pod
+> **System CA trust** (`update-ca-certificates`) is lost on pod restart — it only affects
+> OS-level tools. **Nextcloud's CA trust** (`occ security:certificates:import`) is written to
+> the NC database or data volume and persists across restarts. Both must be run at least once.
+
+#### B.5 — Verify the CA Cert and App Store URL
 
 ```bash
-# Copy the CA cert from the bundle into the NC pod
-kubectl cp bundle/certs/root-ca.crt \
-    ${NC_NS}/${NC_POD}:/usr/local/share/ca-certificates/appstore-root-ca.crt
-
-# Update system trust store
+# Confirm appstoreurl is set
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    update-ca-certificates
+    runuser -u www-data -- php /var/www/html/occ config:system:get appstoreurl
+# Expected: https://{NODE_IP}:30443/api/v1
 
-# CRITICAL: Also import into Nextcloud's own certificate store.
-# Nextcloud uses Guzzle with composer/ca-bundle — NOT the system CA bundle.
-# Without this step, occ app:install will fail with "SSL certificate problem".
+# Confirm NC-level CA trust (should list the imported cert)
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
-    runuser -u www-data -- php occ security:certificates:import \
-    /usr/local/share/ca-certificates/appstore-root-ca.crt
-```
+    runuser -u www-data -- php /var/www/html/occ security:certificates
+# Should include appstore-root-ca.crt or similar
 
-> Both steps are required. Both are lost on pod restart. For a permanent solution,
-> mount the CA cert as a volume and add `occ security:certificates:import` to your
-> NC startup or configure Job.
+# Quick API reachability check from inside NC pod
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    bash -c "curl -sk https://${NODE_IP}:30443/api/v1/apps.json | python3 -c \"
+import sys, json; d = json.load(sys.stdin)
+print(len(d), 'apps reachable from NC pod')
+\""
+# Expected: >300 apps reachable from NC pod
 
 #### B.6 — Validate
 

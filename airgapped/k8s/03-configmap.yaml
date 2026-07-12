@@ -11,7 +11,11 @@ metadata:
     app.kubernetes.io/component: config
 data:
   DJANGO_SETTINGS_MODULE: "nextcloudappstore.settings.production"
-  ALLOWED_HOSTS: "appstore.local,localhost"
+  # REQUIRED: add your cluster node IP here so Nextcloud's occ app:install can reach the App Store.
+  # When occ app:install connects via NodePort (e.g. https://<NODE_IP>:30443/api/v1), Django
+  # receives the request with Host: <NODE_IP>, and returns 400 if the IP is not in ALLOWED_HOSTS.
+  # Replace 192.168.1.100 with the actual node IP before applying this configmap.
+  ALLOWED_HOSTS: "appstore.local,localhost,192.168.1.100"
   DEBUG: "False"
   USE_HTTPS: "True"
   DATABASE_HOST: "postgres-service"

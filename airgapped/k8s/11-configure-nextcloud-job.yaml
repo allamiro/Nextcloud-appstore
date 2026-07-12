@@ -4,13 +4,22 @@
 # This job configures an existing Nextcloud deployment that is running
 # in the SAME Kubernetes cluster as the App Store.
 #
+# IMPORTANT — AIR-GAPPED LIMITATION:
+#   This job uses "bitnami/kubectl:latest" to exec into the Nextcloud pod.
+#   That image is NOT included in the standard airgapped image bundle.
+#   If running in a strict air-gapped environment, do NOT apply this job.
+#   Instead, run the equivalent occ commands manually — see RUN-K8s.md
+#   Phase 4 Step 10 "Manual Configuration" for the kubectl exec commands.
+#
 # For external Nextcloud (different cluster, compose, or SSH), use the
 # configure-nextcloud-*.sh scripts in airgapped/scripts/ instead.
 #
 # Prerequisites:
+#   - bitnami/kubectl:latest is pre-loaded on the cluster node
 #   - Nextcloud is running and accessible at NEXTCLOUD_K8S_POD_SELECTOR
 #   - App Store is deployed and accessible at APPSTORE_API_URL
-#   - CA cert for the App Store TLS is available (if self-signed)
+#   - CA cert for the App Store TLS is mounted at /tmp/appstore-certs/root-ca.crt
+#     inside the Nextcloud pod (13-nextcloud.yaml mounts it from appstore-tls secret)
 #
 # Usage:
 #   kubectl apply -f airgapped/k8s/11-configure-nextcloud-job.yaml
@@ -28,13 +37,14 @@ data:
     #!/bin/sh
     set -e
 
-    APPSTORE_API_URL="${APPSTORE_API_URL:-https://appstore.local/api/v1}"
-    NC_NAMESPACE="${NEXTCLOUD_K8S_NAMESPACE:-nextcloud}"
+    APPSTORE_API_URL="${APPSTORE_API_URL:-https://192.168.1.100:30443/api/v1}"
+    NC_NAMESPACE="${NEXTCLOUD_K8S_NAMESPACE:-nextcloud-appstore}"
     NC_SELECTOR="${NEXTCLOUD_K8S_POD_SELECTOR:-app=nextcloud}"
     NC_CONTAINER="${NEXTCLOUD_K8S_CONTAINER:-nextcloud}"
 
     echo "Configuring Nextcloud to use local App Store..."
     echo "  API URL: ${APPSTORE_API_URL}"
+    echo "  NC namespace: ${NC_NAMESPACE}, selector: ${NC_SELECTOR}"
 
     # Find Nextcloud pod
     NC_POD=$(kubectl get pod -l "${NC_SELECTOR}" -n "${NC_NAMESPACE}" \
@@ -48,15 +58,42 @@ data:
 
     echo "Found Nextcloud pod: ${NC_POD}"
 
+    # Step 1: Trust the App Store CA cert at system level
+    echo "Importing CA cert at system level..."
+    kubectl exec "${NC_POD}" -n "${NC_NAMESPACE}" -c "${NC_CONTAINER}" -- bash -c "
+      cp /tmp/appstore-certs/root-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt
+      update-ca-certificates
+    "
+
+    # Step 2: Import CA cert into Nextcloud's PHP/Guzzle trust store.
+    # Nextcloud uses composer/ca-bundle (Mozilla list), NOT the system CA bundle.
+    # Both steps are required: update-ca-certificates alone is insufficient.
+    echo "Importing CA cert into Nextcloud trust store..."
     kubectl exec "${NC_POD}" -n "${NC_NAMESPACE}" -c "${NC_CONTAINER}" -- \
-      sudo -u www-data php occ config:system:set appstoreenabled --value=true --type=boolean
+      runuser -u www-data -- php /var/www/html/occ security:certificates:import \
+        /tmp/appstore-certs/root-ca.crt
+
+    # Step 3: Enable App Store and set URL
+    echo "Setting appstoreurl to ${APPSTORE_API_URL} ..."
+    kubectl exec "${NC_POD}" -n "${NC_NAMESPACE}" -c "${NC_CONTAINER}" -- \
+      runuser -u www-data -- php /var/www/html/occ \
+        config:system:set appstoreenabled --value=true --type=boolean
 
     kubectl exec "${NC_POD}" -n "${NC_NAMESPACE}" -c "${NC_CONTAINER}" -- \
-      sudo -u www-data php occ config:system:set appstoreurl --value="${APPSTORE_API_URL}"
+      runuser -u www-data -- php /var/www/html/occ \
+        config:system:set appstoreurl --value="${APPSTORE_API_URL}"
+
+    # Step 4: Allow Nextcloud to make requests to internal/local IP addresses.
+    # Without this, occ app:install fails with "Could not download app" even when
+    # the App Store is reachable, because Nextcloud blocks requests to RFC-1918 IPs.
+    echo "Enabling allow_local_remote_servers..."
+    kubectl exec "${NC_POD}" -n "${NC_NAMESPACE}" -c "${NC_CONTAINER}" -- \
+      runuser -u www-data -- php /var/www/html/occ \
+        config:system:set allow_local_remote_servers --value=true --type=boolean
 
     echo "Verifying configuration..."
     kubectl exec "${NC_POD}" -n "${NC_NAMESPACE}" -c "${NC_CONTAINER}" -- \
-      sudo -u www-data php occ config:system:get appstoreurl
+      runuser -u www-data -- php /var/www/html/occ config:system:get appstoreurl
 
     echo "Nextcloud App Store configuration complete."
 
@@ -85,10 +122,11 @@ spec:
           imagePullPolicy: Never
           command: ["/bin/sh", "/scripts/configure.sh"]
           env:
+            # CHANGE THIS to your actual node IP before applying
             - name: APPSTORE_API_URL
-              value: "https://appstore.local/api/v1"
+              value: "https://192.168.1.100:30443/api/v1"
             - name: NEXTCLOUD_K8S_NAMESPACE
-              value: "nextcloud"
+              value: "nextcloud-appstore"
             - name: NEXTCLOUD_K8S_POD_SELECTOR
               value: "app=nextcloud"
             - name: NEXTCLOUD_K8S_CONTAINER
