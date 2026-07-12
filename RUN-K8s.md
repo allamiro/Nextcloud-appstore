@@ -1,8 +1,12 @@
-# RUN-K8s.md — Nextcloud App Store: Air-Gapped Kubernetes Operator Runbook
+# RUN-K8s.md — Nextcloud App Store: Kubernetes Operator Runbook
 
-**Audience:** Operations engineers deploying and maintaining the Nextcloud App Store on an air-gapped Kubernetes cluster.  
-**Scope:** This guide takes you from zero — nothing running anywhere — to a fully operational air-gapped stack.  
-**Commercial side:** The internet-connected Docker Compose side (bundle preparation) is covered in full in `RUN-DOCKER.md`. This document gives a brief summary of the bundle-build steps and then focuses entirely on the Kubernetes deployment.
+**Audience:** Operations engineers deploying and maintaining the Nextcloud App Store on Kubernetes.  
+**Scope:** This guide covers two independent deployment paths:
+
+- **Part A — Commercial (internet-connected) Kubernetes** — deploy directly from this repository to a cluster with internet access; images are pulled from Docker Hub and app metadata is synced live from `apps.nextcloud.com`. Manifests live in `k8s/`.
+- **Part B — Air-Gapped Kubernetes** — deploy to a cluster with no internet access; all images, database content, and app archives are transferred from a commercial-side build host. Manifests live in `airgapped/k8s/`.
+
+Choose the path that matches your environment. Both paths share the same TLS certificate generation workflow (`k8s/generate-certs.sh`) and the same NodePort layout.
 
 ---
 
@@ -87,6 +91,470 @@ k8s/09-tls-secret.yaml         appstore-tls secret (generated, not numbered in a
 ```
 
 > **imagePullPolicy: Never** is set on every workload manifest. Every image must be pre-loaded into the container runtime on every node before any manifest is applied.
+
+---
+
+---
+
+## PART A — Commercial (Internet-Connected) Kubernetes Deployment
+
+Use this part when your Kubernetes cluster has internet access. All images are pulled from
+Docker Hub. App metadata is synced live from `apps.nextcloud.com`. No pre-built bundle
+or image tarballs are needed.
+
+Manifests for this path are in `k8s/` (not `airgapped/k8s/`).
+
+---
+
+### A.1 — Prerequisites
+
+| Tool | Where needed | Verify |
+|------|--------------|--------|
+| `kubectl` 1.26+ | Operator workstation | `kubectl version --client` |
+| `docker` | Build host | `docker version` |
+| A K8s cluster with internet access | — | `kubectl cluster-info` |
+| A StorageClass that can provision PVCs | Cluster | `kubectl get sc` |
+| `openssl` and `bash` | Build host | `openssl version` |
+
+Minimum cluster resources: **3 nodes, 4 vCPU / 8 GB RAM each, 250 GB storage**.
+
+Record the IP of any worker node — this replaces `{IP_ADDRESS}` throughout Part A:
+
+```bash
+kubectl get nodes -o wide
+# Use any INTERNAL-IP or EXTERNAL-IP value from the output
+```
+
+---
+
+### A.2 — Build the App Store Image
+
+The App Store image must be built locally — it is not published to a public registry.
+
+```bash
+git clone https://github.com/your-org/Nextcloud-appstore.git
+cd Nextcloud-appstore
+docker build -t nextcloudappstore:latest .
+```
+
+**Option A — Single-node cluster or Docker Desktop:** The image is already available on the
+local Docker daemon; no push is needed.
+
+**Option B — Multi-node cluster with a private registry:**
+
+```bash
+# Tag and push to your registry
+docker tag nextcloudappstore:latest registry.example.com/nextcloudappstore:latest
+docker push registry.example.com/nextcloudappstore:latest
+
+# Then update the image field in k8s/06-appstore.yaml and k8s/08-cronjob.yaml:
+#   image: registry.example.com/nextcloudappstore:latest
+```
+
+**Option C — Multi-node cluster without a registry (load on each node):**
+
+```bash
+# Save the image
+docker save nextcloudappstore:latest | gzip > nextcloudappstore.tar.gz
+
+# Load on every node (repeat for each node, or push over SSH)
+for NODE in node1 node2 node3; do
+    scp nextcloudappstore.tar.gz ${NODE}:/tmp/
+    ssh ${NODE} "gunzip -c /tmp/nextcloudappstore.tar.gz | docker load"
+done
+```
+
+---
+
+### A.3 — Generate TLS Certificates
+
+```bash
+SERVER_CN={IP_ADDRESS} \
+SERVER_ALT_NAMES='IP:{IP_ADDRESS},DNS:localhost,DNS:appstore.local' \
+bash k8s/generate-certs.sh
+```
+
+This creates `k8s/certs/` (root CA, intermediate CA, server cert) and writes
+`k8s/09-tls-secret.yaml` with base64-encoded values ready to apply.
+
+Trust the root CA on your workstation:
+
+```bash
+# macOS
+sudo security add-trusted-cert -d -r trustRoot \
+    -k /Library/Keychains/System.keychain k8s/certs/root-ca.crt
+
+# Ubuntu/Debian
+sudo cp k8s/certs/root-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt
+sudo update-ca-certificates
+
+# RHEL/Rocky
+sudo cp k8s/certs/root-ca.crt /etc/pki/ca-trust/source/anchors/appstore-root-ca.crt
+sudo update-ca-trust extract
+```
+
+---
+
+### A.4 — Configure Secrets
+
+All secrets in `k8s/02-secrets.yaml` ship with placeholder base64 values. Update them
+before applying.
+
+Generate values:
+
+```bash
+# 64-character secret key (no $ signs — they break env interpolation)
+SECRET_KEY=$(LC_CTYPE=C tr -dc 'a-zA-Z0-9_-' < /dev/urandom | head -c 64)
+echo -n "${SECRET_KEY}" | base64
+
+# Strong password
+echo -n "MyStrongPassword!" | base64
+```
+
+**Method A — kubectl dry-run (preferred):**
+
+```bash
+NS=nextcloud-appstore
+
+kubectl create secret generic appstore-secrets \
+  --from-literal=SECRET_KEY="$(LC_CTYPE=C tr -dc 'a-zA-Z0-9_-' < /dev/urandom | head -c 64)" \
+  --from-literal=DATABASE_PASSWORD="YourAppStoreDBPassword" \
+  -n "${NS}" --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret generic postgres-secrets \
+  --from-literal=POSTGRES_USER="nextcloudappstore" \
+  --from-literal=POSTGRES_DB="nextcloudappstore" \
+  --from-literal=POSTGRES_PASSWORD="YourAppStoreDBPassword" \
+  -n "${NS}" --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret generic postgres-nc-secrets \
+  --from-literal=POSTGRES_USER="nextcloud" \
+  --from-literal=POSTGRES_DB="nextcloud" \
+  --from-literal=POSTGRES_PASSWORD="YourNextcloudDBPassword" \
+  -n "${NS}" --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret generic nextcloud-secrets \
+  --from-literal=NEXTCLOUD_ADMIN_USER="admin" \
+  --from-literal=NEXTCLOUD_ADMIN_PASSWORD="YourNextcloudAdminPassword" \
+  --from-literal=NEXTCLOUD_DB_PASSWORD="YourNextcloudDBPassword" \
+  -n "${NS}" --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret generic rustfs-secrets \
+  --from-literal=RUSTFS_ACCESS_KEY="rustfsadmin" \
+  --from-literal=RUSTFS_SECRET_KEY="YourRustFsSecretKey" \
+  -n "${NS}" --dry-run=client -o yaml | kubectl apply -f -
+```
+
+> **Critical:** `DATABASE_PASSWORD` in `appstore-secrets` and `POSTGRES_PASSWORD` in
+> `postgres-secrets` must be identical. Same rule applies to Nextcloud's DB password.
+
+**Method B — Edit YAML directly:**
+
+Base64-encode each value and edit `k8s/02-secrets.yaml` manually before applying.
+
+---
+
+### A.5 — Update the Nextcloud Trusted Domains
+
+Before applying `k8s/12-nextcloud.yaml`, set `NEXTCLOUD_TRUSTED_DOMAINS` to your node IP:
+
+```yaml
+# k8s/12-nextcloud.yaml
+- name: NEXTCLOUD_TRUSTED_DOMAINS
+  value: "localhost nextcloud nextcloud-service nextcloud.local {IP_ADDRESS}"
+```
+
+---
+
+### A.6 — Deploy the Commercial Stack
+
+Apply manifests from `k8s/` in order. Apply the TLS secret first (nginx needs it).
+
+```bash
+NS=nextcloud-appstore
+
+# 1. Namespace
+kubectl apply -f k8s/01-namespace.yaml
+
+# 2. Secrets, ConfigMap, PVCs
+kubectl apply -f k8s/02-secrets.yaml
+kubectl apply -f k8s/03-configmap.yaml
+kubectl apply -f k8s/04-pvc.yaml
+
+# 3. TLS secret (must exist before nginx starts)
+kubectl apply -f k8s/09-tls-secret.yaml
+
+# 4. App Store PostgreSQL — wait for readiness
+kubectl apply -f k8s/05-postgres.yaml
+kubectl wait --for=condition=ready pod -l app=postgres \
+    -n ${NS} --timeout=180s
+
+# 5. App Store application
+kubectl apply -f k8s/06-appstore.yaml
+kubectl wait --for=condition=ready pod -l app=appstore \
+    -n ${NS} --timeout=300s
+
+# 6. Nginx reverse proxy
+kubectl apply -f k8s/07-nginx.yaml
+kubectl wait --for=condition=ready pod -l app=nginx \
+    -n ${NS} --timeout=120s
+
+# 7. Initial setup job + NC release sync cronjob
+kubectl apply -f k8s/08-cronjob.yaml
+kubectl wait --for=condition=complete job/appstore-initial-setup \
+    -n ${NS} --timeout=300s
+kubectl logs job/appstore-initial-setup -n ${NS}
+# Expected last line: "Initial setup complete!"
+
+# 8. File server
+kubectl apply -f k8s/10-fileserver.yaml
+kubectl wait --for=condition=ready pod -l app=fileserver \
+    -n ${NS} --timeout=120s
+
+# 9. Nextcloud PostgreSQL
+kubectl apply -f k8s/11-postgres-nc.yaml
+kubectl wait --for=condition=ready pod -l app=postgres-nc \
+    -n ${NS} --timeout=180s
+
+# 10. Nextcloud (first boot takes 60–120 s)
+kubectl apply -f k8s/12-nextcloud.yaml
+kubectl wait --for=condition=ready pod -l app=nextcloud \
+    -n ${NS} --timeout=300s
+
+# 11. RustFS + bucket init
+kubectl apply -f k8s/13-rustfs.yaml
+kubectl wait --for=condition=ready pod -l app=rustfs \
+    -n ${NS} --timeout=180s
+kubectl apply -f k8s/14-rustfs-init-job.yaml
+kubectl wait --for=condition=complete job/rustfs-init \
+    -n ${NS} --timeout=120s
+```
+
+---
+
+### A.7 — Sync the App Catalog
+
+Pull all app metadata from the official Nextcloud App Store and populate the NC version table.
+
+```bash
+NS=nextcloud-appstore
+APPSTORE_POD=$(kubectl get pod -l app=appstore -n ${NS} \
+    -o jsonpath='{.items[0].metadata.name}')
+
+# Sync all apps from apps.nextcloud.com (takes 5–15 minutes)
+kubectl exec -n ${NS} ${APPSTORE_POD} -- \
+    python manage.py shell -c "
+import subprocess, sys
+exec(open('/srv/appstore/scripts/sync_inline.py').read())
+"
+```
+
+Because the Django management shell is easiest to use directly, run the sync script
+that ships in the image:
+
+```bash
+# Run the full sync (equivalent to ./scripts/sync-apps.sh on Docker Compose)
+kubectl exec -it -n ${NS} ${APPSTORE_POD} -- \
+    python manage.py shell << 'PYEOF'
+import requests
+from django.db import transaction
+from django.contrib.auth import get_user_model
+from nextcloudappstore.core.models import App, AppRelease, Category, Screenshot
+
+User = get_user_model()
+system_user, _ = User.objects.get_or_create(
+    username='appstore-import',
+    defaults={'email': 'import@localhost', 'is_active': False}
+)
+
+PLATFORMS = ["30.0.0", "33.0.0"]
+apps_by_id = {}
+for _pver in PLATFORMS:
+    print(f"Fetching platform {_pver}...")
+    _r = requests.get(f"https://apps.nextcloud.com/api/v1/platform/{_pver}/apps.json", timeout=120)
+    _r.raise_for_status()
+    for _a in _r.json():
+        _aid = _a.get('id')
+        if not _aid:
+            continue
+        if _aid not in apps_by_id:
+            apps_by_id[_aid] = _a
+        else:
+            seen = {r['version']: r for r in apps_by_id[_aid].get('releases', []) if r.get('version')}
+            for _rel in _a.get('releases', []):
+                _v = _rel.get('version')
+                if _v and _v not in seen:
+                    seen[_v] = _rel
+            apps_by_id[_aid]['releases'] = list(seen.values())
+
+apps = list(apps_by_id.values())
+print(f"Found {len(apps)} apps across platforms")
+
+for i, app_data in enumerate(apps, 1):
+    app_id = app_data.get('id')
+    try:
+        with transaction.atomic():
+            app, created = App.objects.get_or_create(id=app_id, defaults={'owner': system_user})
+            for cat_id in app_data.get('categories', []):
+                try:
+                    app.categories.add(Category.objects.get(id=cat_id))
+                except Exception:
+                    pass
+            app.website = app_data.get('website', '') or ''
+            if app_data.get('certificate') and not app.certificate:
+                app.certificate = app_data['certificate']
+            app.save()
+            translations = app_data.get('translations', {})
+            if 'en' in translations and not app.translations.filter(language_code='en').exists():
+                en = translations['en']
+                app.set_current_language('en')
+                app.name = en.get('name', app_id)
+                app.summary = en.get('summary', '')
+                app.description = en.get('description', '')
+                app.save()
+            for rel in app_data.get('releases', []):
+                ver = rel.get('version')
+                if ver and not AppRelease.objects.filter(app=app, version=ver).exists():
+                    raw_platform = rel.get('rawPlatformVersionSpec', '') or ''
+                    raw_php = rel.get('rawPhpVersionSpec', '') or '*'
+                    platform_spec = rel.get('platformVersionSpec', '') or ''
+                    if ' ' in platform_spec and ',' not in platform_spec:
+                        platform_spec = platform_spec.replace(' ', ',')
+                    if not raw_platform:
+                        raw_platform = platform_spec.replace(',', ' ')
+                    AppRelease.objects.create(
+                        app=app, version=ver,
+                        platform_version_spec=platform_spec,
+                        php_version_spec='',
+                        raw_platform_version_spec=raw_platform,
+                        raw_php_version_spec=raw_php,
+                        download=rel.get('download', ''),
+                        signature=rel.get('signature', ''),
+                        is_nightly=rel.get('isNightly', False),
+                    )
+            if i % 50 == 0:
+                print(f"Progress: {i}/{len(apps)}")
+    except Exception as e:
+        print(f"Error: {app_id}: {e}")
+
+print(f"Done. Apps: {App.objects.count()}, Releases: {AppRelease.objects.count()}")
+PYEOF
+```
+
+After the sync, populate the Nextcloud version table (required for the releases table to
+render on each app's detail page):
+
+```bash
+kubectl exec -n ${NS} ${APPSTORE_POD} -- \
+    python manage.py syncnextcloudreleases --oldest-supported 13.0.0
+```
+
+The `08-cronjob.yaml` also deploys a `sync-nextcloud-releases` CronJob that runs this
+command hourly, keeping the NC version list up to date automatically.
+
+---
+
+### A.8 — Connect Nextcloud to the Local App Store
+
+```bash
+NS=nextcloud-appstore
+NC_POD=$(kubectl get pod -l app=nextcloud -n ${NS} \
+    -o jsonpath='{.items[0].metadata.name}')
+
+# Install the App Store root CA so Nextcloud trusts the self-signed TLS cert
+kubectl cp k8s/certs/root-ca.crt ${NS}/${NC_POD}:/tmp/appstore-ca.crt
+kubectl exec -n ${NS} ${NC_POD} -- bash -c \
+    "cp /tmp/appstore-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt && update-ca-certificates"
+
+# Point Nextcloud at the local App Store
+kubectl exec -n ${NS} ${NC_POD} -- \
+    sudo -u www-data php occ config:system:set appstoreenabled --value=true --type=boolean
+kubectl exec -n ${NS} ${NC_POD} -- \
+    sudo -u www-data php occ config:system:set appstoreurl \
+    --value="https://{IP_ADDRESS}:30443/api/v1"
+
+# Allow connections to the internal App Store host (bypasses Nextcloud SSRF protection)
+kubectl exec -n ${NS} ${NC_POD} -- \
+    sudo -u www-data php occ config:system:set allow_local_remote_servers \
+    --value=true --type=boolean
+
+# Verify
+kubectl exec -n ${NS} ${NC_POD} -- \
+    sudo -u www-data php occ config:system:get appstoreurl
+# Expected: https://{IP_ADDRESS}:30443/api/v1
+```
+
+---
+
+### A.9 — Validate the Commercial Kubernetes Deployment
+
+```bash
+NODE_IP="{IP_ADDRESS}"
+
+# App Store health
+curl -sk https://${NODE_IP}:30443/health/
+# Expected: OK
+
+# API returns apps
+curl -sk "https://${NODE_IP}:30443/api/v1/platform/33.0.0/apps.json" \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'{len(d)} apps for NC 33')"
+
+# File server (empty until you mirror archives — that is optional for commercial)
+curl -sk https://${NODE_IP}:30444/apps/
+
+# Nextcloud
+curl -s http://${NODE_IP}:30082/status.php | python3 -m json.tool | grep installed
+# Expected: "installed": true
+
+# RustFS
+curl -s http://${NODE_IP}:30900/minio/health/live && echo OK
+```
+
+Log in to Nextcloud at `http://{IP_ADDRESS}:30082`, navigate to **Apps** — the list
+should be populated from the local App Store.
+
+### A.10 — Commercial Kubernetes Access URLs
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| App Store UI | `https://{IP_ADDRESS}:30443/` | from `k8s/02-secrets.yaml` |
+| App Store Admin | `https://{IP_ADDRESS}:30443/admin/` | `ADMIN_USERNAME` / `ADMIN_PASSWORD` |
+| App Store API | `https://{IP_ADDRESS}:30443/api/v1/` | public |
+| App Store health | `https://{IP_ADDRESS}:30443/health/` | public |
+| File server (HTTPS) | `https://{IP_ADDRESS}:30444/apps/` | public |
+| Nextcloud | `http://{IP_ADDRESS}:30082/` | `NEXTCLOUD_ADMIN_USER` / `NEXTCLOUD_ADMIN_PASSWORD` |
+| RustFS S3 API | `http://{IP_ADDRESS}:30900/` | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` |
+| RustFS Console | `http://{IP_ADDRESS}:30901/` | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` |
+
+### A.11 — Commercial Kubernetes Manifest Reference
+
+| File | What it deploys |
+|------|-----------------|
+| `k8s/01-namespace.yaml` | `nextcloud-appstore` namespace |
+| `k8s/02-secrets.yaml` | `appstore-secrets`, `postgres-secrets` |
+| `k8s/03-configmap.yaml` | `appstore-config`, `uwsgi-config` |
+| `k8s/04-pvc.yaml` | postgres, static, media, logs, fileserver PVCs |
+| `k8s/05-postgres.yaml` | App Store PostgreSQL + ClusterIP service |
+| `k8s/06-appstore.yaml` | Django/uWSGI Deployment + ClusterIP service |
+| `k8s/07-nginx.yaml` | nginx TLS proxy + NodePort 30080/30443 |
+| `k8s/08-cronjob.yaml` | NC release sync CronJob (hourly) + initial setup Job |
+| `k8s/09-tls-secret.yaml` | `appstore-tls` secret (generated by `generate-certs.sh`) |
+| `k8s/10-fileserver.yaml` | nginx file server + NodePort 30081/30444 |
+| `k8s/11-postgres-nc.yaml` | Nextcloud PostgreSQL + ClusterIP service |
+| `k8s/12-nextcloud.yaml` | Nextcloud:stable-apache + NodePort 30082 |
+| `k8s/13-rustfs.yaml` | RustFS S3 store + NodePort 30900/30901 |
+| `k8s/14-rustfs-init-job.yaml` | One-shot: create RustFS buckets |
+
+---
+
+## PART B — Air-Gapped Kubernetes Deployment
+
+Use this part when the target Kubernetes cluster has **no internet access**. Everything —
+Docker images, app metadata, app archives — is bundled on an internet-connected commercial
+host (using Docker Compose, documented in `RUN-DOCKER.md`) and physically transferred to
+the air-gapped cluster.
+
+Manifests for this path are in `airgapped/k8s/`.
 
 ---
 
