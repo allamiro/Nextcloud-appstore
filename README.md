@@ -48,27 +48,57 @@ Complete deployment package for building the Nextcloud App Store on a staging sy
 
 **Runbooks:**
 - Docker Compose (commercial + air-gapped): [RUN-DOCKER.md](RUN-DOCKER.md)
-- Kubernetes (air-gapped): [RUN-K8s.md](RUN-K8s.md)
+- Kubernetes (commercial + air-gapped): [RUN-K8s.md](RUN-K8s.md)
 
 ## Service Ports
 
-### Docker Compose (Staging)
+Replace `{IP}` with your server's actual IP address or hostname.
 
-| Service | Port | URL | Purpose |
-|---------|------|-----|---------|
-| PostgreSQL | 5432 | {IP_ADDRESS}:5432 | Database |
-| App Store | 8000 | http://{IP_ADDRESS}:8000 | Django API/UI |
-| Nginx Proxy | 80/443 | https://{IP_ADDRESS} | SSL Proxy |
-| File Server | 8082/8444 | http://{IP_ADDRESS}:8082/apps/ | App Archives |
+### Docker Compose — Commercial (`docker-compose.yml`)
 
-### Kubernetes (Air-Gapped)
+| Service | Host port(s) | URL | Notes |
+|---------|-------------|-----|-------|
+| App Store (HTTPS) | **443** | `https://{IP}/` | Main UI and API |
+| App Store (HTTP) | 80 | `http://{IP}/` | Redirects to HTTPS |
+| App Store API | **443** | `https://{IP}/api/v1/` | Nextcloud queries this |
+| App Store Admin | **443** | `https://{IP}/admin/` | Django admin panel |
+| File server (HTTPS) | **8444** | `https://{IP}:8444/apps/` | Mirrored app archives |
+| File server (HTTP) | 8082 | `http://{IP}:8082/apps/` | Plain HTTP alternative |
+| Nextcloud | **8083** | `http://{IP}:8083/` | Test Nextcloud instance |
+| RustFS S3 API | 9000 | `http://{IP}:9000/` | S3-compatible endpoint |
+| RustFS Console | **9001** | `http://{IP}:9001/` | Web management UI |
 
-| Service | Port | NodePort | URL | Purpose |
-|---------|------|----------|-----|---------|
-| postgres-service | 5432 | - | ClusterIP | Database |
-| appstore-service | 8000 | - | ClusterIP | Django Backend |
-| nginx-service | 80/443 | 30080/30443 | https://{IP_ADDRESS}:30443 | App Store UI/API |
-| fileserver-service | 80/443 | 30081/30444 | https://{IP_ADDRESS}:30444/apps/ | App Archives |
+### Docker Compose — Air-Gapped (`airgapped/docker-compose/docker-compose.airgapped.yml`)
+
+| Service | Host port(s) | URL | Notes |
+|---------|-------------|-----|-------|
+| App Store (HTTPS) | **30443** | `https://{IP}:30443/` | Main UI and API |
+| App Store (HTTP) | 30080 | `http://{IP}:30080/` | Redirects to HTTPS |
+| App Store API | **30443** | `https://{IP}:30443/api/v1/` | Nextcloud queries this |
+| App Store Admin | **30443** | `https://{IP}:30443/admin/` | Django admin panel |
+| File server (HTTPS) | **30444** | `https://{IP}:30444/apps/` | Mirrored app archives |
+| File server (HTTP) | 30081 | `http://{IP}:30081/apps/` | Plain HTTP alternative |
+| Nextcloud | **8081** | `http://{IP}:8081/` | Test Nextcloud instance |
+| RustFS S3 API | 9000 | `http://{IP}:9000/` | S3-compatible endpoint |
+| RustFS Console | **9001** | `http://{IP}:9001/` | Web management UI |
+
+### Kubernetes — Commercial (`k8s/`) and Air-Gapped (`airgapped/k8s/`) — NodePorts
+
+Both K8s paths use the same NodePort layout. Access via any cluster node IP.
+
+| Service | NodePort(s) | URL | Notes |
+|---------|-------------|-----|-------|
+| App Store (HTTPS) | **30443** | `https://{IP}:30443/` | Main UI and API |
+| App Store (HTTP) | 30080 | `http://{IP}:30080/` | Redirects to HTTPS |
+| App Store API | **30443** | `https://{IP}:30443/api/v1/` | Nextcloud queries this |
+| App Store Admin | **30443** | `https://{IP}:30443/admin/` | Django admin panel |
+| File server (HTTPS) | **30444** | `https://{IP}:30444/apps/` | Mirrored app archives |
+| File server (HTTP) | 30081 | `http://{IP}:30081/apps/` | Plain HTTP alternative |
+| Nextcloud | **30082** | `http://{IP}:30082/` | Test Nextcloud instance |
+| RustFS S3 API | **30900** | `http://{IP}:30900/` | S3-compatible endpoint |
+| RustFS Console | **30901** | `http://{IP}:30901/` | Web management UI |
+
+Internal services (`postgres`, `appstore` uWSGI) use ClusterIP and are not exposed outside the cluster.
 
 ## Directory Structure
 
