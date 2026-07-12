@@ -26,8 +26,8 @@ spec:
         spec:
           restartPolicy: OnFailure
           securityContext:
-            runAsUser: 1000
-            runAsGroup: 1000
+            runAsUser: 1001
+            runAsGroup: 1001
           containers:
             - name: sync-releases
               image: nextcloudappstore:latest
@@ -69,8 +69,8 @@ spec:
     spec:
       restartPolicy: OnFailure
       securityContext:
-        runAsUser: 1000
-        runAsGroup: 1000
+        runAsUser: 1001
+        runAsGroup: 1001
       initContainers:
         - name: wait-for-postgres
           image: postgres:15-alpine

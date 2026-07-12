@@ -12,7 +12,7 @@ metadata:
 data:
   # Django settings
   DJANGO_SETTINGS_MODULE: "nextcloudappstore.settings.production"
-  ALLOWED_HOSTS: "appstore.example.com,localhost"
+  ALLOWED_HOSTS: "appstore.example.com,localhost,192.168.65.3,appstore-service"
   DEBUG: "False"
   USE_HTTPS: "True"
   
@@ -31,9 +31,14 @@ data:
   # Application settings
   LOAD_FIXTURES: "false"
   IMPORT_TRANSLATIONS: "false"
-  
+
   # Site domain
   SITE_DOMAIN: "appstore.example.com"
+
+  # In Kubernetes, log to /dev/null for the file handler so Django startup
+  # does not fail on permission errors — stdout (console handler) is captured
+  # by the container runtime and is the primary log stream.
+  LOG_FILE: "/dev/null"
   
   # ==========================================================================
   # Air-Gapped Environment Notes:
@@ -64,8 +69,6 @@ data:
     processes = 4
     threads = 2
     enable-threads = true
-    uid = nextcloudappstore
-    gid = nextcloudappstore
     socket = 0.0.0.0:8000
     protocol = uwsgi
     buffer-size = 65535
@@ -80,8 +83,6 @@ data:
     vacuum = true
     die-on-term = true
     log-date = true
-    logto = /srv/logs/uwsgi.log
-    log-maxsize = 104857600
     lazy-apps = true
     thunder-lock = true
     optimize = 2

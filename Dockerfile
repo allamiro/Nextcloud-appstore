@@ -13,6 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=en_US.UTF-8
 
 # Install build dependencies (Ubuntu 24.04 has Python 3.12)
+# Node.js 20 is required — toSorted() used by copy-webpack-plugin is Node 20+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         locales \
@@ -25,15 +26,9 @@ RUN apt-get update && \
         ca-certificates \
         libpcre3 libpcre3-dev \
     && locale-gen en_US.UTF-8 \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js 20 LTS via NodeSource.
-# Ubuntu 24.04's default nodejs package is v18 which lacks Array.toSorted()
-# required by copy-webpack-plugin 12+. Node 20 ships it natively.
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    node --version && npm --version
 
 WORKDIR /build
 

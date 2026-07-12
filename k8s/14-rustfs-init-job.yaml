@@ -31,8 +31,8 @@ spec:
             - /bin/sh
             - -c
             - |
-              until wget -qO- http://rustfs-service:9000/minio/health/live; do
-                echo "Waiting for RustFS..."
+              until nc -z rustfs-service 9000 2>/dev/null; do
+                echo "Waiting for RustFS port 9000..."
                 sleep 3
               done
               echo "RustFS is ready."

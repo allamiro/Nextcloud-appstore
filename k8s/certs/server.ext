@@ -2,4 +2,4 @@ authorityKeyIdentifier=keyid,issuer
 basicConstraints=CA:FALSE
 keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth,clientAuth
-subjectAltName=IP:192.168.178.165,DNS:localhost,DNS:appstore.local
+subjectAltName=IP:192.168.65.3,IP:127.0.0.1,DNS:localhost,DNS:appstore.local

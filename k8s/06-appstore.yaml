@@ -28,9 +28,9 @@ spec:
         app.kubernetes.io/component: application
     spec:
       securityContext:
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
       initContainers:
         - name: wait-for-postgres
           image: postgres:15-alpine
