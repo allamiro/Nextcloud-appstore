@@ -115,9 +115,17 @@ ONLINE (internet required) — first-time workflow:
       Start the full stack: App Store + Nextcloud + databases + nginx + fileserver.
       Nextcloud auto-installs on first boot (takes ~1 min after the container starts).
 
+  online up-appstoreonly
+      Start the App Store stack WITHOUT the bundled Nextcloud or its database.
+      Use this when you already have Nextcloud running elsewhere and want to
+      connect it to this App Store. After bringing up the stack, run:
+        NEXTCLOUD_CONTAINER_NAME=<your-nc-container> $0 online setup-nextcloud
+
   online setup-nextcloud
       Install the CA certificate inside the Nextcloud container and configure it
-      to use the local App Store. Run this once after 'online up'.
+      to use the local App Store. Run this once after 'online up' or
+      'online up-appstoreonly'. Override the target container with
+      NEXTCLOUD_CONTAINER_NAME=<container-name>.
 
   online audit
       Show repo structure, image status, and environment summary.
@@ -197,6 +205,7 @@ cmd_online() {
     case "${action}" in
         audit)             online_audit ;;
         up)                online_up ;;
+        up-appstoreonly)   online_up_appstoreonly ;;
         setup-nextcloud)   online_setup_nextcloud ;;
         sync)              online_sync "$@" ;;
         mirror)            online_mirror ;;
@@ -303,6 +312,61 @@ online_up() {
     echo ""
     info "Next step: wait for Nextcloud to finish installing, then run:"
     echo "  $0 online setup-nextcloud"
+}
+
+online_up_appstoreonly() {
+    separator
+    info "Starting App Store stack only (bundled Nextcloud excluded)"
+    separator
+
+    require_cmd docker
+
+    # Stage configs for macOS Docker Desktop (Desktop folder bind-mount restriction)
+    if _on_macos; then
+        _stage_runtime_configs
+    fi
+
+    # Append the appstoreonly override which assigns nextcloud + postgres-nc to
+    # the 'nextcloud' profile, so docker compose skips them when no --profile flag
+    # is given.
+    local CF
+    CF="$(_compose_files) -f ${PROJECT_DIR}/docker-compose.appstoreonly.yml"
+
+    info "Building nextcloudappstore image from Dockerfile..."
+    # shellcheck disable=SC2086
+    docker compose ${CF} build appstore
+
+    info "Starting App Store services (postgres, appstore, nginx, fileserver, rustfs)..."
+    # shellcheck disable=SC2086
+    LOAD_FIXTURES=true IMPORT_TRANSLATIONS=true \
+        docker compose ${CF} up -d
+
+    echo ""
+    info "Waiting for App Store to be healthy (uWSGI on :8000)..."
+    RETRIES=40
+    # shellcheck disable=SC2086
+    until docker compose ${CF} \
+            exec -T appstore python -c \
+            "import socket; s=socket.socket(); s.settimeout(5); s.connect(('127.0.0.1',8000)); s.close()" \
+            &>/dev/null || [ "${RETRIES}" -eq 0 ]; do
+        printf "."
+        sleep 3
+        RETRIES=$((RETRIES - 1))
+    done
+    echo ""
+
+    separator
+    info "App Store stack is up (no bundled Nextcloud)"
+    echo ""
+    echo "  App Store  : https://${APPSTORE_DOMAIN}"
+    echo "  Admin      : https://${APPSTORE_DOMAIN}/admin/"
+    echo "  File Srv   : http://${FILESERVER_DOMAIN:-${APPSTORE_DOMAIN}}:8082/apps/"
+    echo "  RustFS UI  : http://${APPSTORE_DOMAIN}:9001"
+    echo ""
+    NC_CONTAINER="${NEXTCLOUD_CONTAINER_NAME:-<your-nc-container>}"
+    info "Next: connect your existing Nextcloud and sync:"
+    echo "  NEXTCLOUD_CONTAINER_NAME=${NC_CONTAINER} $0 online setup-nextcloud"
+    echo "  $0 online sync"
 }
 
 online_setup_nextcloud() {

@@ -1,0 +1,33 @@
+# =============================================================================
+# App Store Only — Compose Override
+# =============================================================================
+# Excludes the bundled Nextcloud (and its PostgreSQL) from the default stack.
+# Use this when you have an existing Nextcloud you want to connect to the App
+# Store rather than deploying a fresh one.
+#
+# Recommended (handles macOS bind-mount restriction automatically):
+#   ./scripts/appstorectl.sh online up-appstoreonly
+#
+# Manual — Linux only (macOS must use appstorectl.sh):
+#   docker compose \
+#       -f docker-compose.yml \
+#       -f docker-compose.appstoreonly.yml \
+#       up -d
+#
+# To start the bundled Nextcloud later alongside this override (opt-in):
+#   docker compose \
+#       -f docker-compose.yml \
+#       -f docker-compose.appstoreonly.yml \
+#       --profile nextcloud up -d
+# =============================================================================
+
+services:
+  # Assign bundled Nextcloud and its database to the 'nextcloud' profile so
+  # they are skipped when no --profile flag is given.
+  nextcloud:
+    profiles:
+      - nextcloud
+
+  postgres-nc:
+    profiles:
+      - nextcloud

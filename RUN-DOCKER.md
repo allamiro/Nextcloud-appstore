@@ -22,6 +22,7 @@
 7. [PHASE 4 — Air-Gapped Docker Compose Deployment](#phase-4--air-gapped-docker-compose-deployment)
 8. [PHASE 5 — Update Cycle](#phase-5--update-cycle)
 9. [Troubleshooting](#troubleshooting)
+10. [Appendix — Integrating with an Existing Nextcloud](#appendix--integrating-with-an-existing-nextcloud)
 
 ---
 
@@ -1775,3 +1776,252 @@ docker compose -f airgapped/docker-compose/docker-compose.airgapped.yml down
 
 *For Kubernetes deployment instructions, refer to the manifests under `k8s/` (commercial) and
 `airgapped/k8s/` (air-gapped) and the corresponding sections in `RUN.md`.*
+
+---
+
+## Appendix — Integrating with an Existing Nextcloud
+
+Use this appendix when Nextcloud is already running (on Docker, a VM, a cloud host, or a managed service) and you want to deploy only the App Store stack and connect the two. You skip the bundled `nextcloud` and `postgres-nc` services and point your existing Nextcloud at the new local App Store.
+
+The complete flow is:
+1. **Commercial side** — deploy App Store only, sync from upstream, connect existing Nextcloud
+2. **Air-gapped side** — receive the bundle, deploy App Store only, connect existing air-gapped Nextcloud
+
+### Lessons Learned
+
+These issues were confirmed during end-to-end rebuild testing and are all handled automatically by the scripts below — listed here so you understand what goes wrong if any step is skipped:
+
+| Issue | Symptom | Root Cause |
+|---|---|---|
+| `occ app:install` fails | *"not found on the appstore"* | `allow_local_remote_servers` not set — NC's SSRF filter blocks requests to private/loopback IPs |
+| Releases table empty | App detail page shows no NC versions | `syncnextcloudreleases` never ran — `NextcloudRelease` table has 0 rows |
+| NC cannot verify TLS | *"Could not connect to the App Store"* | CA cert not installed inside the NC container (trusting it on the host is not enough) |
+| App installation silently fails | No error, app never appears | `appstoreurl` not set or still points at `apps.nextcloud.com` |
+
+---
+
+### Part A — Commercial: Deploy App Store alongside an Existing Nextcloud
+
+#### Network Prerequisite
+
+Nextcloud must be able to make HTTPS requests to the App Store nginx from inside its container. Choose the right approach for your setup:
+
+| Your setup | Approach |
+|---|---|
+| Existing NC runs on the **same Docker host** in a different compose project | Connect NC container to the `appstore-network` (see Step A.4) |
+| Existing NC runs on a **different host / VM** | Set `SERVER_CN` and `APPSTORE_API_URL` to the App Store host's **LAN IP** (not `127.0.0.1`) |
+| Existing NC is a **managed/cloud Nextcloud** | Set `SERVER_CN` to a DNS name resolvable from that NC host; ensure port 443 is reachable |
+
+> **macOS note:** Docker Desktop on macOS blocks bind mounts from `~/Desktop`. Always use
+> `appstorectl.sh` instead of bare `docker compose` — the script stages configs to
+> `~/.appstore-runtime/` before starting containers.
+
+#### A.1 — Clone and Configure `.env`
+
+Follow Steps 1.1 and 1.2 from PHASE 1. Pay special attention to these values:
+
+```bash
+# ─── How Nextcloud will reach the App Store ───────────────────────────────────
+# Use the app store host's LAN IP — NOT 127.0.0.1.
+# Nextcloud runs inside a container; localhost inside the container is NC itself.
+SERVER_CN=192.168.1.100
+APPSTORE_API_URL=https://192.168.1.100/api/v1
+
+# ─── Target container for setup-nextcloud ─────────────────────────────────────
+# Name of your existing Nextcloud Docker container
+NEXTCLOUD_CONTAINER_NAME=my_nextcloud
+```
+
+#### A.2 — Generate TLS Certificates and Trust the CA
+
+Follow Step 1.3 (generate certs with the `SERVER_CN` above) and Step 1.4 (trust the root CA on your workstation).
+
+#### A.3 — Start the App Store Stack Only
+
+A dedicated compose override (`docker-compose.appstoreonly.yml`) assigns the bundled `nextcloud` and `postgres-nc` services to the `nextcloud` profile, so they are skipped unless you explicitly opt in.
+
+```bash
+# Starts: postgres, appstore, nginx, fileserver, rustfs (NO bundled Nextcloud)
+./scripts/appstorectl.sh online up-appstoreonly
+```
+
+Verify the stack is healthy:
+
+```bash
+curl -sk https://localhost/health/
+# Expected: OK
+
+curl -sk "https://localhost/api/v1/platform/33.0.0/apps.json" | python3 -c \
+    "import sys,json; print(len(json.load(sys.stdin)), 'apps')"
+# Expected: 0 apps (sync hasn't run yet)
+```
+
+**Linux-only alternative** (if you prefer not to use `appstorectl.sh`):
+
+```bash
+docker compose \
+    -f docker-compose.yml \
+    -f docker-compose.appstoreonly.yml \
+    up -d
+```
+
+#### A.4 — Ensure Network Connectivity
+
+**Same Docker host:** connect your existing NC container to the App Store network so it can reach the nginx service directly.
+
+```bash
+# Find the exact network name (format: <project>_appstore-network)
+docker network ls | grep appstore-network
+
+# Connect your existing NC to it
+docker network connect nextcloud-appstore_appstore-network my_nextcloud
+```
+
+**Different host:** no network join needed — just ensure port 443 is open from the NC host to the App Store host's LAN IP.
+
+#### A.5 — Connect Your Existing Nextcloud to the App Store
+
+Set `NEXTCLOUD_CONTAINER_NAME` to your existing NC container name and run the setup command. It will target your container regardless of which compose project it belongs to.
+
+```bash
+NEXTCLOUD_CONTAINER_NAME=my_nextcloud \
+    ./scripts/appstorectl.sh online setup-nextcloud
+```
+
+This automatically performs all required steps:
+
+1. Copies `k8s/certs/root-ca.crt` into **your** NC container as a trusted CA
+2. Runs `update-ca-certificates` inside your NC container
+3. Sets `appstoreurl = https://<SERVER_CN>/api/v1` in your NC config
+4. Sets `appstoreenabled = true`
+5. Sets `allow_local_remote_servers = true` — **critical**: without this NC's SSRF filter blocks all requests to the App Store and `occ app:install` fails with *"Host violates local access rules"*
+6. Runs a connectivity test from inside your NC container to the App Store API
+7. Rolls back on test failure
+
+If the connectivity test fails:
+
+```bash
+# Diagnose from inside your NC container
+docker exec my_nextcloud curl -sk https://192.168.1.100/health/
+# Should return: OK
+
+# If "Could not resolve host" — the NC container can't find the App Store.
+# Make sure it's connected to the appstore-network (Step A.4) or using the LAN IP.
+docker exec my_nextcloud curl -sk "https://192.168.1.100/api/v1/platform/33.0.0/apps.json" \
+    | python3 -c "import sys,json; print(len(json.load(sys.stdin)), 'apps')"
+```
+
+#### A.6 — Sync the App Catalog
+
+```bash
+./scripts/appstorectl.sh online sync
+```
+
+This runs two steps automatically:
+1. Imports all app metadata from `apps.nextcloud.com` (5–15 min)
+2. Runs `syncnextcloudreleases --oldest-supported 13.0.0` so the NC version → channel releases grid on each app detail page is populated
+
+Expected output at completion:
+
+```
+Sync complete!
+New apps imported: 312
+...
+[OK] Nextcloud releases synced.
+```
+
+#### A.7 — Verify App Installation
+
+Log in to your existing Nextcloud and open **Apps** — the marketplace should load from your local App Store. From the command line:
+
+```bash
+docker exec -u www-data my_nextcloud php occ app:install calendar
+# Expected: calendar 6.x.x installed
+```
+
+Check that NC is actually querying your App Store (not `apps.nextcloud.com`):
+
+```bash
+docker compose logs nginx | grep 'platform.*apps.json'
+# Expected: GET /api/v1/platform/33.0.6/apps.json HTTP/2.0 → 200
+```
+
+---
+
+### Part B — Commercial to Air-Gapped: Using the Bundle with an Existing Air-Gapped Nextcloud
+
+Once Part A is complete and you have a working commercial App Store, follow PHASE 2–3 to build and transfer the air-gap bundle. Then use the steps below on the air-gapped side instead of the full PHASE 4 deployment (which includes deploying a bundled Nextcloud).
+
+#### B.1 — What You Need from the Commercial Side
+
+- DB dump: `airgapped/exports/nextcloudappstore_db.sql.gz`
+- App archives (if mirroring): `exports/app-archives/files/`
+- TLS certificates: `k8s/certs/` directory
+- Docker images tarball (if no registry): `airgapped/exports/images/appstore-images.tar.gz`
+
+Transfer all of these to the air-gapped host via your secure transfer method (see PHASE 3).
+
+#### B.2 — Start App Store Services Only (No Bundled Nextcloud)
+
+On the air-gapped host, after loading Docker images (Step 4.4):
+
+```bash
+# Configure .env — point SERVER_CN at the air-gapped App Store host's LAN IP
+# and set your existing NC container name
+SERVER_CN=10.10.0.50
+APPSTORE_API_URL=https://10.10.0.50/api/v1
+NEXTCLOUD_CONTAINER_NAME=my_airgapped_nextcloud
+
+# Start App Store services only (the override excludes bundled Nextcloud)
+docker compose \
+    -f airgapped/docker-compose/docker-compose.airgapped.yml \
+    up -d postgres db-import appstore nginx fileserver rustfs
+```
+
+Wait for the DB import to complete:
+
+```bash
+docker compose \
+    -f airgapped/docker-compose/docker-compose.airgapped.yml \
+    logs -f db-import
+# Wait for: "Database import complete"
+```
+
+> **NOTE:** `syncnextcloudreleases` does **not** need to run on the air-gapped side — the
+> NC releases data was included in the DB export from the commercial side.
+
+#### B.3 — Connect the Existing Air-Gapped Nextcloud
+
+```bash
+# Connect the existing NC container to the App Store network
+docker network connect \
+    nextcloud-appstore_appstore-network \
+    my_airgapped_nextcloud
+
+# Install CA cert inside NC and configure app store settings
+NEXTCLOUD_CONTAINER_NAME=my_airgapped_nextcloud \
+    bash airgapped/scripts/configure-nextcloud-compose.sh
+
+# Set allow_local_remote_servers (required — the configure script above does not set it)
+docker exec -u www-data my_airgapped_nextcloud \
+    php occ config:system:set allow_local_remote_servers --value=true --type=boolean
+```
+
+#### B.4 — Verify
+
+```bash
+# Confirm appstoreurl is set correctly
+docker exec -u www-data my_airgapped_nextcloud \
+    php occ config:system:get appstoreurl
+# Expected: https://10.10.0.50/api/v1
+
+# Install an app from the local store
+docker exec -u www-data my_airgapped_nextcloud php occ app:install calendar
+# Expected: calendar x.x.x installed
+
+# Confirm it downloaded from the local file server (not github.com)
+docker compose \
+    -f airgapped/docker-compose/docker-compose.airgapped.yml \
+    logs nginx | grep -i 'calendar.*tar.gz'
+# Should show a 200 from /apps/calendar-*.tar.gz on the local fileserver
+```

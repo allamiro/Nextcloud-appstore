@@ -1,10 +1,11 @@
 # RUN-K8s.md — Nextcloud App Store: Kubernetes Operator Runbook
 
 **Audience:** Operations engineers deploying and maintaining the Nextcloud App Store on Kubernetes.  
-**Scope:** This guide covers two independent deployment paths:
+**Scope:** This guide covers three deployment paths:
 
 - **Part A — Commercial (internet-connected) Kubernetes** — deploy directly from this repository to a cluster with internet access; images are pulled from Docker Hub and app metadata is synced live from `apps.nextcloud.com`. Manifests live in `k8s/`.
 - **Part B — Air-Gapped Kubernetes** — deploy to a cluster with no internet access; all images, database content, and app archives are transferred from a commercial-side build host. Manifests live in `airgapped/k8s/`.
+- **Appendix F — Integrating with an Existing Nextcloud** — deploy only the App Store stack (skip the bundled Nextcloud manifests) and connect an already-running Nextcloud to it, for both commercial and air-gapped clusters.
 
 Choose the path that matches your environment. Both paths share the same TLS certificate generation workflow (`k8s/generate-certs.sh`) and the same NodePort layout.
 
@@ -1782,3 +1783,397 @@ For the cluster nodes to be reachable from operator workstations and for Nextclo
 | 9001 | RustFS Console |
 
 All inter-pod communication is within the `nextcloud-appstore` namespace on ClusterIP services and requires no external firewall changes.
+
+---
+
+## Appendix F — Integrating with an Existing Nextcloud
+
+Use this appendix when Nextcloud is already running in your Kubernetes cluster (or a
+separate cluster/host) and you want to deploy only the App Store stack and connect the two.
+You skip the Nextcloud-related manifests from this repository and point your existing
+Nextcloud at the new local App Store.
+
+The flow for each path:
+
+| Path | Manifests to apply | Manifests to skip |
+|---|---|---|
+| **Commercial K8s — existing NC same cluster** | `k8s/` 01–10 | 11 (postgres-nc), 12 (nextcloud), 13–14 optional |
+| **Commercial K8s — existing NC different namespace/cluster** | `k8s/` 01–10 | same + RBAC grant needed |
+| **Air-gapped K8s — existing NC same cluster** | `airgapped/k8s/` 01–08, 10, 11 (modified), 14–15 optional | 09 (nextcloud-test), 12 (postgres-nc), 13 (nextcloud) |
+
+### Lessons Learned (Apply to Both Paths)
+
+| Issue | Symptom | Fix |
+|---|---|---|
+| SSRF filter blocks App Store | `occ app:install` → *"Host violates local access rules"* | `allow_local_remote_servers = true` **must** be set in every NC instance |
+| Releases grid empty | App detail page shows no NC versions | `syncnextcloudreleases` must run on the commercial side; data travels in the DB export |
+| NC rejects TLS cert | *"Could not connect to the App Store"* | CA cert must be installed **inside** the NC pod, not just trusted on the node |
+| App store returns 0 apps | API call returns `[]` | DB import job hasn't completed; check job logs |
+
+---
+
+### Part A — Commercial Kubernetes: App Store Only (No Bundled Nextcloud)
+
+#### A.1 — Apply App Store Manifests Only
+
+Apply manifests `01` through `10` from `k8s/`. Do **not** apply `11` (postgres-nc),
+`12` (nextcloud), or — unless you want object storage — `13`/`14` (rustfs).
+
+```bash
+NS=nextcloud-appstore
+
+# Foundation
+kubectl apply -f k8s/01-namespace.yaml
+kubectl apply -f k8s/09-tls-secret.yaml    # apply TLS secret before other resources reference it
+kubectl apply -f k8s/02-secrets.yaml
+kubectl apply -f k8s/03-configmap.yaml
+kubectl apply -f k8s/04-pvc.yaml           # only app store PVCs — no NC PVCs in this file
+
+# App Store database
+kubectl apply -f k8s/05-postgres.yaml
+kubectl wait --for=condition=ready pod -l app=postgres \
+    -n ${NS} --timeout=120s
+
+# App Store application tier
+kubectl apply -f k8s/06-appstore.yaml
+kubectl apply -f k8s/07-nginx.yaml
+kubectl apply -f k8s/10-fileserver.yaml
+
+# Wait for App Store to be fully ready
+kubectl wait --for=condition=ready pod -l app=appstore \
+    -n ${NS} --timeout=180s
+kubectl wait --for=condition=ready pod -l app=nginx \
+    -n ${NS} --timeout=60s
+
+# Sync cron job + initial release sync job
+kubectl apply -f k8s/08-cronjob.yaml
+```
+
+> **Manifests intentionally skipped:**
+> - `k8s/11-postgres-nc.yaml` — Nextcloud's PostgreSQL (not needed, you have your own NC)
+> - `k8s/12-nextcloud.yaml` — Nextcloud itself (you have your own NC)
+> - `k8s/13-rustfs.yaml` / `k8s/14-rustfs-init-job.yaml` — S3 object storage (optional)
+
+#### A.2 — Sync the App Catalog
+
+Once the App Store pod is ready, run the sync. The initial `syncnextcloudreleases` Job in
+`08-cronjob.yaml` triggers automatically within a minute, but you can run it immediately:
+
+```bash
+NS=nextcloud-appstore
+AS_POD=$(kubectl get pod -l app=appstore -n ${NS} \
+    -o jsonpath='{.items[0].metadata.name}')
+
+# Sync all apps from apps.nextcloud.com (5–15 min)
+kubectl exec -n ${NS} ${AS_POD} -- \
+    python manage.py loaddata \
+    nextcloudappstore/core/fixtures/categories.json
+
+# Then run the main sync
+kubectl exec -n ${NS} ${AS_POD} -- \
+    python manage.py shell -c "
+import requests
+from django.db import transaction
+from django.contrib.auth import get_user_model
+from nextcloudappstore.core.models import App, AppRelease, Category
+# ... (see Section A.7 for the full inline sync script)
+"
+```
+
+For the complete inline sync script, use the same Python block from **Section A.7** of
+this guide — copy it into a `kubectl exec -n ${NS} ${AS_POD} -- python manage.py shell`
+invocation.
+
+After the app sync, populate the Nextcloud releases table:
+
+```bash
+kubectl exec -n ${NS} ${AS_POD} -- \
+    python manage.py syncnextcloudreleases --oldest-supported 13.0.0
+```
+
+#### A.3 — Connect Your Existing Nextcloud to the App Store
+
+##### Find Your Existing Nextcloud Pod
+
+```bash
+# Replace these with your actual NC namespace and label selector
+NC_NS=nextcloud                              # namespace where your NC runs
+NC_SELECTOR="app=nextcloud"                 # label selector for NC pods
+NC_CONTAINER="nextcloud"                    # container name inside the pod
+
+NC_POD=$(kubectl get pod -l "${NC_SELECTOR}" -n ${NC_NS} \
+    -o jsonpath='{.items[0].metadata.name}')
+echo "Found NC pod: ${NC_POD}"
+```
+
+##### Install the App Store Root CA Inside Your NC Pod
+
+The CA must go inside the NC pod itself — trusting it on the node is not sufficient because
+NC's HTTP client uses the container's trust store.
+
+```bash
+# Copy the CA cert from local disk into the NC pod
+kubectl cp k8s/certs/root-ca.crt \
+    ${NC_NS}/${NC_POD}:/usr/local/share/ca-certificates/appstore-root-ca.crt
+
+# Update the trust store inside the pod
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    update-ca-certificates
+```
+
+> **Note:** This change is lost when the NC pod restarts. For a permanent fix, mount
+> `k8s/certs/root-ca.crt` as a ConfigMap volume and add an initContainer that runs
+> `update-ca-certificates` — or patch the NC image to include the cert.
+
+##### Configure Nextcloud to Use the Local App Store
+
+The `appstoreurl` must use an address reachable from inside the NC pod.
+
+- **Same cluster, NC in any namespace:** use the nginx NodePort on any node IP
+  (`https://<NODE_IP>:30443/api/v1`). Cross-namespace ClusterIP access also works via
+  the FQDN `https://appstore-nginx.nextcloud-appstore.svc.cluster.local/api/v1` if the
+  NC pod's DNS resolves it.
+- **NC in a separate cluster:** use the App Store node's external IP + NodePort 30443.
+
+```bash
+NODE_IP="{IP_ADDRESS}"          # any Kubernetes node IP
+APP_STORE_URL="https://${NODE_IP}:30443/api/v1"
+
+# Enable the custom App Store
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    sudo -u www-data php occ config:system:set appstoreenabled \
+    --value=true --type=boolean
+
+# Set the URL
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    sudo -u www-data php occ config:system:set appstoreurl \
+    --value="${APP_STORE_URL}"
+
+# CRITICAL: Allow NC to reach the private-IP App Store (bypasses SSRF filter).
+# Without this flag, occ app:install fails with:
+#   "Host {NODE_IP} violates local access rules"
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    sudo -u www-data php occ config:system:set allow_local_remote_servers \
+    --value=true --type=boolean
+
+# Verify
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    sudo -u www-data php occ config:system:get appstoreurl
+# Expected: https://{NODE_IP}:30443/api/v1
+```
+
+#### A.4 — Validate
+
+```bash
+NODE_IP="{IP_ADDRESS}"
+
+# App Store health
+curl -sk https://${NODE_IP}:30443/health/
+# Expected: OK
+
+# API returns apps
+curl -sk "https://${NODE_IP}:30443/api/v1/platform/33.0.0/apps.json" \
+    | python3 -c "import sys,json; print(len(json.load(sys.stdin)), 'apps')"
+# Expected: >300 apps
+
+# Install an app from inside NC
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    sudo -u www-data php occ app:install calendar
+# Expected: calendar x.x.x installed
+```
+
+---
+
+### Part B — Air-Gapped Kubernetes: App Store Only (No Bundled Nextcloud)
+
+This section assumes you have already built and transferred the air-gap bundle (following
+Parts B and C of the main air-gapped deployment guide), and that Nextcloud is already
+running in the air-gapped cluster.
+
+#### B.1 — Manifests to Apply and Which to Skip
+
+```
+airgapped/k8s/
+  01-namespace.yaml          ← APPLY
+  02-secrets.yaml            ← APPLY
+  03-configmap.yaml          ← APPLY
+  04-pvc.yaml                ← APPLY  (no NC PVCs in this file)
+  05-postgres.yaml           ← APPLY  (App Store DB)
+  06-appstore.yaml           ← APPLY
+  07-nginx.yaml              ← APPLY
+  08-fileserver.yaml         ← APPLY
+  09-nextcloud-test.yaml     ← SKIP   (test NC; you have your own)
+  10-import-db-job.yaml      ← APPLY  (imports the DB export)
+  11-configure-nextcloud-job.yaml  ← APPLY (but MUST edit targets first — see B.2)
+  12-postgres-nc.yaml        ← SKIP   (NC's postgres; you have your own NC)
+  13-nextcloud.yaml          ← SKIP   (NC; you have your own)
+  14-rustfs.yaml             ← OPTIONAL
+  15-rustfs-init-job.yaml    ← OPTIONAL (pair with 14)
+```
+
+#### B.2 — Edit the Configure-Nextcloud Job Before Applying
+
+The `11-configure-nextcloud-job.yaml` job runs `kubectl exec` to configure NC. By default
+it looks for NC in namespace `nextcloud` with selector `app=nextcloud`. Edit the file to
+match your existing NC deployment before applying it.
+
+```yaml
+# In airgapped/k8s/11-configure-nextcloud-job.yaml, update these env vars:
+env:
+  - name: APPSTORE_API_URL
+    value: "https://{NODE_IP}:30443/api/v1"      # ← your App Store NodePort address
+  - name: NEXTCLOUD_K8S_NAMESPACE
+    value: "nextcloud"                            # ← namespace of your existing NC
+  - name: NEXTCLOUD_K8S_POD_SELECTOR
+    value: "app=nextcloud"                        # ← label selector of your NC pod
+  - name: NEXTCLOUD_K8S_CONTAINER
+    value: "nextcloud"                            # ← container name inside the NC pod
+```
+
+> **RBAC requirement:** The configure job runs `kubectl exec` against pods in the NC
+> namespace. If your NC is in a **different** namespace from `nextcloud-appstore`, the
+> `default` service account in `nextcloud-appstore` will not have permission by default.
+> Apply this ClusterRoleBinding before running the job:
+
+```yaml
+# Save as k8s-nc-exec-rbac.yaml and apply once
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: appstore-nc-configure
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/exec"]
+  verbs: ["get", "list", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: appstore-nc-configure
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: nextcloud-appstore
+roleRef:
+  kind: ClusterRole
+  name: appstore-nc-configure
+  apiGroup: rbac.authorization.k8s.io
+```
+
+```bash
+kubectl apply -f k8s-nc-exec-rbac.yaml
+```
+
+> Remove this ClusterRoleBinding after the configure job completes to follow least-privilege.
+
+#### B.3 — Deploy in Order
+
+```bash
+NS=nextcloud-appstore
+
+# 1. Namespace
+kubectl apply -f airgapped/k8s/01-namespace.yaml
+
+# 2. Secrets, config, storage (apply TLS secret after generating certs — see Phase 3)
+kubectl apply -f airgapped/k8s/02-secrets.yaml
+kubectl apply -f airgapped/k8s/03-configmap.yaml
+kubectl apply -f airgapped/k8s/04-pvc.yaml
+
+# 3. App Store database
+kubectl apply -f airgapped/k8s/05-postgres.yaml
+kubectl wait --for=condition=ready pod -l app=postgres \
+    -n ${NS} --timeout=120s
+
+# 4. App Store application tier
+kubectl apply -f airgapped/k8s/06-appstore.yaml
+kubectl apply -f airgapped/k8s/07-nginx.yaml
+kubectl apply -f airgapped/k8s/08-fileserver.yaml
+kubectl wait --for=condition=ready pod -l app=appstore \
+    -n ${NS} --timeout=180s
+
+# 5. Import DB from bundle
+kubectl apply -f airgapped/k8s/10-import-db-job.yaml
+kubectl wait --for=condition=complete job/db-import \
+    -n ${NS} --timeout=300s
+kubectl logs -n ${NS} job/db-import | tail -5
+# Expected last line: "Database import complete"
+
+# 6. Copy app archives to fileserver pod
+FS_POD=$(kubectl get pod -l app=fileserver -n ${NS} \
+    -o jsonpath='{.items[0].metadata.name}')
+kubectl cp bundle/app-archives/files/. ${NS}/${FS_POD}:/srv/files/
+
+# 7. Configure your existing Nextcloud (edit env vars first — see B.2)
+kubectl apply -f airgapped/k8s/11-configure-nextcloud-job.yaml
+kubectl wait --for=condition=complete job/configure-nextcloud \
+    -n ${NS} --timeout=120s
+kubectl logs -n ${NS} job/configure-nextcloud
+```
+
+#### B.4 — Set `allow_local_remote_servers` on Your Existing NC
+
+The configure job above sets `appstoreurl` and `appstoreenabled` but does **not** set
+`allow_local_remote_servers`. You must set it manually, otherwise `occ app:install` fails
+with *"Host violates local access rules"*.
+
+```bash
+NC_NS=nextcloud
+NC_SELECTOR="app=nextcloud"
+NC_CONTAINER="nextcloud"
+
+NC_POD=$(kubectl get pod -l "${NC_SELECTOR}" -n ${NC_NS} \
+    -o jsonpath='{.items[0].metadata.name}')
+
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    sudo -u www-data php occ config:system:set allow_local_remote_servers \
+    --value=true --type=boolean
+```
+
+#### B.5 — Install the CA Cert Inside Your Existing NC Pod
+
+```bash
+# Copy the CA cert from the bundle into the NC pod
+kubectl cp bundle/certs/root-ca.crt \
+    ${NC_NS}/${NC_POD}:/usr/local/share/ca-certificates/appstore-root-ca.crt
+
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    update-ca-certificates
+```
+
+> This survives only until the NC pod restarts. For a permanent solution, add the cert
+> as a ConfigMap and mount it with an initContainer that runs `update-ca-certificates`.
+
+#### B.6 — Validate
+
+```bash
+NODE_IP="{IP_ADDRESS}"
+NC_NS=nextcloud
+NC_SELECTOR="app=nextcloud"
+NC_CONTAINER="nextcloud"
+
+NC_POD=$(kubectl get pod -l "${NC_SELECTOR}" -n ${NC_NS} \
+    -o jsonpath='{.items[0].metadata.name}')
+
+# App Store reachable
+curl -sk "https://${NODE_IP}:30443/api/v1/platform/33.0.0/apps.json" \
+    | python3 -c "import sys,json; print(len(json.load(sys.stdin)), 'apps')"
+# Expected: >300 apps (from the DB import)
+
+# NC config is correct
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    sudo -u www-data php occ config:system:get appstoreurl
+# Expected: https://{NODE_IP}:30443/api/v1
+
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    sudo -u www-data php occ config:system:get allow_local_remote_servers
+# Expected: true
+
+# Install a test app
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    sudo -u www-data php occ app:install calendar
+# Expected: calendar x.x.x installed
+
+# Confirm download came from local file server (not github.com)
+kubectl logs -n ${NS} deployment/nginx | grep -i 'calendar.*tar.gz'
+# Expected: GET /apps/calendar-*.tar.gz → 200
+```
