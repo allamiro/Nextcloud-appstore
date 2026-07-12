@@ -24,9 +24,16 @@ RUN apt-get update && \
         curl \
         ca-certificates \
         libpcre3 libpcre3-dev \
-        nodejs npm \
     && locale-gen en_US.UTF-8 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20 LTS via NodeSource.
+# Ubuntu 24.04's default nodejs package is v18 which lacks Array.toSorted()
+# required by copy-webpack-plugin 12+. Node 20 ships it natively.
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    node --version && npm --version
 
 WORKDIR /build
 
