@@ -113,11 +113,25 @@ system_user, _ = User.objects.get_or_create(
 )
 print(f"Using system user: {system_user.username}")
 
-# Use platform-specific API which includes screenshots and translations
-print("Fetching apps from official store (platform API)...")
-resp = requests.get("https://apps.nextcloud.com/api/v1/platform/30.0.0/apps.json", timeout=120)
-apps = resp.json()
-print(f"Found {len(apps)} apps")
+# Fetch apps for multiple platform versions so all NC-compatible releases are imported
+PLATFORMS = ["30.0.0", "33.0.0"]
+apps_by_id = {}
+for _pver in PLATFORMS:
+    print(f"Fetching apps for platform {_pver}...")
+    _r = requests.get(f"https://apps.nextcloud.com/api/v1/platform/{_pver}/apps.json", timeout=120)
+    for _a in _r.json():
+        _aid = _a.get('id')
+        if _aid not in apps_by_id:
+            apps_by_id[_aid] = _a
+        else:
+            _seen = {r['version']: r for r in apps_by_id[_aid].get('releases', [])}
+            for _rel in _a.get('releases', []):
+                _v = _rel.get('version')
+                if _v and _v not in _seen:
+                    _seen[_v] = _rel
+            apps_by_id[_aid]['releases'] = list(_seen.values())
+apps = list(apps_by_id.values())
+print(f"Found {len(apps)} unique apps across platforms: {', '.join(PLATFORMS)}")
 
 imported = 0
 translations_added = 0
@@ -145,6 +159,9 @@ for i, app_data in enumerate(apps, 1):
             app.admin_docs = app_data.get('adminDocs', '') or ''
             app.developer_docs = app_data.get('developerDocs', '') or ''
             app.issue_tracker = app_data.get('issueTracker', '') or ''
+            # Certificate is required by Nextcloud's code-signing validation
+            if app_data.get('certificate') and not app.certificate:
+                app.certificate = app_data['certificate']
             app.save()
             
             # Add translations from API
@@ -174,17 +191,22 @@ for i, app_data in enumerate(apps, 1):
             for rel in app_data.get('releases', []):
                 ver = rel.get('version')
                 if ver and not AppRelease.objects.filter(app=app, version=ver).exists():
-                    platform_spec = rel.get('platformVersionSpec', '*')
+                    raw_platform = rel.get('rawPlatformVersionSpec', '') or ''
+                    raw_php = rel.get('rawPhpVersionSpec', '') or '*'
+                    platform_spec = rel.get('platformVersionSpec', '') or ''
                     if ' ' in platform_spec and ',' not in platform_spec:
                         platform_spec = platform_spec.replace(' ', ',')
-                    php_spec = rel.get('phpVersionSpec', '*')
-                    if ' ' in php_spec and ',' not in php_spec:
-                        php_spec = php_spec.replace(' ', ',')
+                    # Populate raw_ fields: NC AppFetcher uses rawPlatformVersionSpec to
+                    # call VersionParser.getVersion(); empty raw means unconstrained.
+                    if not raw_platform:
+                        raw_platform = platform_spec.replace(',', ' ')
                     AppRelease.objects.create(
                         app=app,
                         version=ver,
                         platform_version_spec=platform_spec,
-                        php_version_spec=php_spec,
+                        php_version_spec='',
+                        raw_platform_version_spec=raw_platform,
+                        raw_php_version_spec=raw_php,
                         download=rel.get('download', ''),
                         signature=rel.get('signature', ''),
                         is_nightly=rel.get('isNightly', False),
