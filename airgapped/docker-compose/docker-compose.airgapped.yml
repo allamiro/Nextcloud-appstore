@@ -100,7 +100,7 @@ services:
         gunzip -c "$$DUMP" | psql -h postgres -U nextcloudappstore -d nextcloudappstore --quiet
         echo "Import complete."
     volumes:
-      - ./exports:/exports:ro
+      - ../exports:/exports:ro
     networks:
       - appstore-network
 
@@ -115,6 +115,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      db-import:
+        condition: service_completed_successfully
     environment:
       DATABASE_HOST: postgres
       DATABASE_PORT: 5432
@@ -175,7 +177,7 @@ services:
     volumes:
       - ../../fileserver/nginx.conf:/etc/nginx/nginx.conf:ro
       - ../../nginx/ssl:/etc/nginx/ssl:ro
-      - ./exports/app-archives/files:/srv/apps:ro
+      - ../exports/app-archives/files:/srv/apps:ro
     networks:
       appstore-network:
         aliases:

@@ -119,12 +119,19 @@ apps_by_id = {}
 for _pver in PLATFORMS:
     print(f"Fetching apps for platform {_pver}...")
     _r = requests.get(f"https://apps.nextcloud.com/api/v1/platform/{_pver}/apps.json", timeout=120)
-    for _a in _r.json():
+    _r.raise_for_status()
+    _data = _r.json()
+    if not isinstance(_data, list):
+        print(f"  WARNING: unexpected response type for {_pver}: {type(_data).__name__}, skipping")
+        continue
+    for _a in _data:
         _aid = _a.get('id')
+        if not _aid or not isinstance(_aid, str):
+            continue
         if _aid not in apps_by_id:
             apps_by_id[_aid] = _a
         else:
-            _seen = {r['version']: r for r in apps_by_id[_aid].get('releases', [])}
+            _seen = {r['version']: r for r in apps_by_id[_aid].get('releases', []) if r.get('version')}
             for _rel in _a.get('releases', []):
                 _v = _rel.get('version')
                 if _v and _v not in _seen:

@@ -295,11 +295,11 @@ online_up() {
     separator
     info "Stack is up"
     echo ""
-    echo "  App Store  : https://{IP_ADDRESS}"
-    echo "  Admin      : https://{IP_ADDRESS}/admin/"
-    echo "  File Srv   : http://{IP_ADDRESS}:8082/apps/"
-    echo "  Nextcloud  : http://{IP_ADDRESS}:8083  (installing — wait ~60s on first boot)"
-    echo "  RustFS UI  : http://{IP_ADDRESS}:9001"
+    echo "  App Store  : https://${APPSTORE_DOMAIN}"
+    echo "  Admin      : https://${APPSTORE_DOMAIN}/admin/"
+    echo "  File Srv   : http://${FILESERVER_DOMAIN:-${APPSTORE_DOMAIN}}:8082/apps/"
+    echo "  Nextcloud  : http://${APPSTORE_DOMAIN}:8083  (installing — wait ~60s on first boot)"
+    echo "  RustFS UI  : http://${APPSTORE_DOMAIN}:9001"
     echo ""
     info "Next step: wait for Nextcloud to finish installing, then run:"
     echo "  $0 online setup-nextcloud"
@@ -520,8 +520,18 @@ cmd_package() {
 }
 
 package_build() {
+    # Parse flags: --appstore-only (default) vs --include-managed-nextcloud
+    local INCLUDE_NEXTCLOUD=false
+    for _arg in "$@"; do
+        case "${_arg}" in
+            --include-managed-nextcloud) INCLUDE_NEXTCLOUD=true ;;
+            --appstore-only)             INCLUDE_NEXTCLOUD=false ;;
+        esac
+    done
+
     separator
     info "Building air-gapped deployment package"
+    info "  include-managed-nextcloud : ${INCLUDE_NEXTCLOUD}"
     separator
 
     require_cmd docker
@@ -540,8 +550,11 @@ package_build() {
         -f "${PROJECT_DIR}/Dockerfile" \
         "${PROJECT_DIR}"
 
-    # ── 2. Save images (Nextcloud + RustFS always included for air-gapped stack) ─
-    local images=("nextcloudappstore:latest" "postgres:15-alpine" "nginx:alpine" "nextcloud:stable-apache" "rustfs/rustfs:latest" "minio/mc:latest")
+    # ── 2. Save images ────────────────────────────────────────────────────────
+    local images=("nextcloudappstore:latest" "postgres:15-alpine" "nginx:alpine" "rustfs/rustfs:latest" "minio/mc:latest")
+    if [ "${INCLUDE_NEXTCLOUD}" = "true" ]; then
+        images+=("nextcloud:stable-apache")
+    fi
 
     for img in "${images[@]}"; do
         local safe_name
