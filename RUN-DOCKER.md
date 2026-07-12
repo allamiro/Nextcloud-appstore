@@ -345,9 +345,12 @@ This command performs all of the following automatically:
 4. Sets `appstoreurl` in Nextcloud's configuration to the value of `APPSTORE_API_URL` from
    your `.env`.
 5. Sets `appstoreenabled = true` in Nextcloud's configuration.
-6. Tests HTTPS connectivity from inside the Nextcloud container to the App Store API.
-7. Automatically rolls back to the previous settings if the connectivity test fails.
-8. Saves the previous `appstoreurl` and `appstoreenabled` values to
+6. Sets `allow_local_remote_servers = true` so Nextcloud can reach the App Store on a
+   private/loopback address. Without this flag Nextcloud's SSRF filter blocks all requests
+   to `appstore.local` and `occ app:install` fails with *"Host violates local access rules"*.
+7. Tests HTTPS connectivity from inside the Nextcloud container to the App Store API.
+8. Automatically rolls back to the previous settings if the connectivity test fails.
+9. Saves the previous `appstoreurl` and `appstoreenabled` values to
    `exports/.nc-config-backup-compose.env`.
 
 If this command fails, see the [Troubleshooting](#troubleshooting) section.
@@ -362,15 +365,19 @@ Pull all app metadata from the official Nextcloud App Store at `apps.nextcloud.c
 ./scripts/appstorectl.sh online sync
 ```
 
-This can take 5–15 minutes depending on your connection speed. The sync fetches app names,
-descriptions, screenshots, release versions, platform compatibility specifications, and
-download URLs for all published Nextcloud apps and stores them in the local PostgreSQL
-database.
+This can take 5–15 minutes depending on your connection speed. The sync performs two tasks:
+
+1. **App metadata sync** — fetches app names, descriptions, screenshots, release versions,
+   platform compatibility specifications, and download URLs for all published Nextcloud apps
+   and stores them in the local PostgreSQL database.
+2. **Nextcloud release sync** — populates the `NextcloudRelease` table (NC version →
+   stable channel mapping) so the releases grid on each app detail page renders correctly.
+   Without this step the releases table is always empty.
 
 > **NOTE:** The sync imports metadata only — it does not download any `.tar.gz` package
 > archives. Packages are downloaded in Step 1.11.
 
-When the sync completes you will see a summary similar to:
+When the sync completes you will see output similar to:
 ```
 Sync complete!
 New apps imported: 312
@@ -379,6 +386,9 @@ Screenshots added: 1847
 Total apps: 312
 Total releases: 4821
 Total screenshots: 1847
+
+Syncing Nextcloud release metadata (versions → channels)...
+[OK] Nextcloud releases synced.
 ```
 
 ---

@@ -351,6 +351,17 @@ online_setup_nextcloud() {
     NEXTCLOUD_CONTAINER_NAME="${NC_CONTAINER}" \
         bash "${AIRGAP_DIR}/scripts/configure-nextcloud-compose.sh" --no-ca
 
+    # Allow Nextcloud to reach local/private IPs (required for occ app:install to work).
+    # Without this NC's SSRF filter blocks all requests to appstore.local with
+    # "Host violates local access rules" and app installation silently fails.
+    info "Enabling local server access (SSRF bypass for private network App Store)..."
+    if docker exec -u www-data "${NC_CONTAINER}" \
+        php occ config:system:set allow_local_remote_servers --value=true --type=boolean; then
+        ok "allow_local_remote_servers = true"
+    else
+        warn "Failed to set allow_local_remote_servers — 'occ app:install' may not work"
+    fi
+
     separator
     info "Nextcloud is connected to the local App Store."
     echo ""
@@ -367,6 +378,13 @@ online_sync() {
     separator
     require_running_appstore
     bash "${SCRIPT_DIR}/sync-apps.sh" "$@"
+
+    # Populate the NextcloudRelease table (NC version → stable channel mapping).
+    # Without this the releases grid on app detail pages is always empty.
+    info "Syncing Nextcloud release metadata (versions → channels)..."
+    docker compose exec -T appstore python manage.py syncnextcloudreleases \
+        --oldest-supported 13.0.0
+    ok "Nextcloud releases synced."
 }
 
 online_mirror() {
