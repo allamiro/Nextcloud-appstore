@@ -473,10 +473,14 @@ NS=nextcloud-appstore
 NC_POD=$(kubectl get pod -l app=nextcloud -n ${NS} \
     -o jsonpath='{.items[0].metadata.name}')
 
-# Install the App Store root CA so Nextcloud trusts the self-signed TLS cert
-kubectl cp k8s/certs/root-ca.crt ${NS}/${NC_POD}:/tmp/appstore-ca.crt
+# Install the App Store root CA into Nextcloud's own certificate trust store.
+# IMPORTANT: Nextcloud uses Guzzle with composer/ca-bundle (Mozilla's bundle),
+# NOT the system CA bundle. update-ca-certificates alone is NOT sufficient.
+# You must also import via occ security:certificates:import.
 kubectl exec -n ${NS} ${NC_POD} -- bash -c \
-    "cp /tmp/appstore-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt && update-ca-certificates"
+    "cp /tmp/appstore-certs/root-ca.crt /usr/local/share/ca-certificates/appstore-root-ca.crt && update-ca-certificates"
+kubectl exec -n ${NS} ${NC_POD} -- \
+    runuser -u www-data -- php occ security:certificates:import /tmp/appstore-certs/root-ca.crt
 
 # Point Nextcloud at the local App Store
 kubectl exec -n ${NS} ${NC_POD} -- \
@@ -494,6 +498,9 @@ kubectl exec -n ${NS} ${NC_POD} -- \
 kubectl exec -n ${NS} ${NC_POD} -- \
     runuser -u www-data -- php occ config:system:get appstoreurl
 # Expected: https://{IP_ADDRESS}:30443/api/v1
+kubectl exec -n ${NS} ${NC_POD} -- \
+    runuser -u www-data -- php occ security:certificates
+# Expected: row showing root-ca.crt / Nextcloud App Store Intermediate CA
 ```
 
 ---
@@ -1930,14 +1937,23 @@ NC's HTTP client uses the container's trust store.
 kubectl cp k8s/certs/root-ca.crt \
     ${NC_NS}/${NC_POD}:/usr/local/share/ca-certificates/appstore-root-ca.crt
 
-# Update the trust store inside the pod
+# Update the system trust store (for curl/wget inside the container)
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
     update-ca-certificates
+
+# CRITICAL: Also import into Nextcloud's own certificate store.
+# Nextcloud's HTTP client (Guzzle) uses composer/ca-bundle — the Mozilla
+# bundle — NOT the system CA bundle. The occ import is required for
+# app:install and all other App Store API calls to succeed.
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    runuser -u www-data -- php occ security:certificates:import \
+    /usr/local/share/ca-certificates/appstore-root-ca.crt
 ```
 
-> **Note:** This change is lost when the NC pod restarts. For a permanent fix, mount
-> `k8s/certs/root-ca.crt` as a ConfigMap volume and add an initContainer that runs
-> `update-ca-certificates` — or patch the NC image to include the cert.
+> **Note:** Both steps are required and are lost on pod restart. For a permanent
+> fix, mount `k8s/certs/root-ca.crt` as a volume (already done in `k8s/12-nextcloud.yaml`
+> via the `appstore-ca` volume) and add `occ security:certificates:import` to the
+> configure-nextcloud Job so it runs at every deployment.
 
 ##### Configure Nextcloud to Use the Local App Store
 
@@ -2150,12 +2166,21 @@ kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
 kubectl cp bundle/certs/root-ca.crt \
     ${NC_NS}/${NC_POD}:/usr/local/share/ca-certificates/appstore-root-ca.crt
 
+# Update system trust store
 kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
     update-ca-certificates
+
+# CRITICAL: Also import into Nextcloud's own certificate store.
+# Nextcloud uses Guzzle with composer/ca-bundle — NOT the system CA bundle.
+# Without this step, occ app:install will fail with "SSL certificate problem".
+kubectl exec -n ${NC_NS} ${NC_POD} -c ${NC_CONTAINER} -- \
+    runuser -u www-data -- php occ security:certificates:import \
+    /usr/local/share/ca-certificates/appstore-root-ca.crt
 ```
 
-> This survives only until the NC pod restarts. For a permanent solution, add the cert
-> as a ConfigMap and mount it with an initContainer that runs `update-ca-certificates`.
+> Both steps are required. Both are lost on pod restart. For a permanent solution,
+> mount the CA cert as a volume and add `occ security:certificates:import` to your
+> NC startup or configure Job.
 
 #### B.6 — Validate
 
